@@ -1,0 +1,759 @@
+#LyX 2.4 created this file. For more info see https://www.lyx.org/
+\lyxformat 620
+\begin_document
+\begin_header
+\save_transient_properties true
+\origin unavailable
+\textclass article
+\use_default_options true
+\begin_modules
+theorems-ams
+theorems-ams-extended
+\end_modules
+\maintain_unincluded_children no
+\language american
+\language_package default
+\inputencoding utf8
+\fontencoding auto
+\font_roman "default" "default"
+\font_sans "default" "default"
+\font_typewriter "default" "default"
+\font_math "auto" "auto"
+\font_default_family default
+\use_non_tex_fonts false
+\font_sc false
+\font_roman_osf false
+\font_sans_osf false
+\font_typewriter_osf false
+\font_sf_scale 100 100
+\font_tt_scale 100 100
+\use_microtype false
+\use_dash_ligatures true
+\graphics default
+\default_output_format default
+\output_sync 0
+\bibtex_command default
+\index_command default
+\float_placement class
+\float_alignment class
+\paperfontsize default
+\spacing single
+\use_hyperref true
+\pdf_bookmarks true
+\pdf_bookmarksnumbered false
+\pdf_bookmarksopen false
+\pdf_bookmarksopenlevel 1
+\pdf_breaklinks true
+\pdf_pdfborder true
+\pdf_colorlinks true
+\pdf_backref false
+\pdf_pdfusetitle false
+\papersize default
+\use_geometry false
+\use_package amsmath 1
+\use_package amssymb 1
+\use_package cancel 1
+\use_package esint 1
+\use_package mathdots 1
+\use_package mathtools 1
+\use_package mhchem 1
+\use_package stackrel 1
+\use_package stmaryrd 1
+\use_package undertilde 1
+\cite_engine basic
+\cite_engine_type default
+\biblio_style plain
+\use_bibtopic false
+\use_indices false
+\paperorientation portrait
+\suppress_date false
+\justification true
+\use_refstyle 1
+\use_formatted_ref 0
+\use_minted 0
+\use_lineno 0
+\index Index
+\shortcut idx
+\color #008000
+\end_index
+\secnumdepth 3
+\tocdepth 3
+\paragraph_separation indent
+\paragraph_indentation default
+\is_math_indent 0
+\math_numbering_side default
+\quotes_style english
+\dynamic_quotes 0
+\papercolumns 1
+\papersides 1
+\paperpagestyle default
+\tablestyle default
+\tracking_changes false
+\output_changes false
+\change_bars false
+\postpone_fragile_content true
+\html_math_output 0
+\html_css_as_file 0
+\html_be_strict false
+\docbook_table_output 0
+\docbook_mathml_prefix 1
+\end_header
+
+\begin_body
+
+\begin_layout Lemma
+\begin_inset CommandInset label
+LatexCommand label
+name "lem:det-displace"
+
+\end_inset
+
+
+\begin_inset Argument 1
+status collapsed
+
+\begin_layout Plain Layout
+Constant optimizations and duplication effects for Lemma 4.1 of 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "hmp01"
+literal "false"
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+ Suppose 
+\begin_inset Formula $\left(f,g\right)$
+\end_inset
+
+ are each functions from 
+\begin_inset Formula $\left[n\right]$
+\end_inset
+
+ to 
+\begin_inset Formula $\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+.
+ Let 
+\begin_inset Formula $F_{x}=\left\{ i\in\left[n\right]:f\left(i\right)=x\right\} $
+\end_inset
+
+ and 
+\begin_inset Formula $G_{x}=\left\{ i\in\left[n\right]:g\left(i\right)=x\right\} $
+\end_inset
+
+.
+ Let 
+\begin_inset Formula $\mu:\left[n\right]\rightarrow\left[n\right]$
+\end_inset
+
+ be a 
+\begin_inset Quotes eld
+\end_inset
+
+deduplication
+\begin_inset Quotes erd
+\end_inset
+
+ map,
+ so that for all 
+\begin_inset Formula $x,y\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+,
+ 
+\begin_inset Formula $\mu$
+\end_inset
+
+ maps all elements of 
+\begin_inset Formula $U_{xy}:=\left\{ i\in\left[n\right]:f\left(i\right)=x\land g\left(i\right)=y\right\} $
+\end_inset
+
+ to a single arbitrary element of 
+\begin_inset Formula $U_{xy}$
+\end_inset
+
+.
+ Then in 
+\begin_inset Formula $O\left(n\log n\right)$
+\end_inset
+
+ deterministic time and 
+\begin_inset Formula $O\left(n\log n\right)$
+\end_inset
+
+ bits of space,
+ one can construct 
+\begin_inset Formula $d:\left\{ 0,1\right\} ^{r}\rightarrow\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ for which,
+ with function 
+\begin_inset Formula $h\left(x\right)=g\left(x\right)\oplus d\left(f\left(x\right)\right)$
+\end_inset
+
+,
+ and 
+\begin_inset Formula $H_{x}=\left\{ i\in\left[n\right]:h\left(i\right)=x\right\} $
+\end_inset
+
+,
+ we have:
+\end_layout
+
+\begin_deeper
+\begin_layout Enumerate
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le\frac{1}{2^{r}}\binom{n}{2}$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Enumerate
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)\right\rfloor $
+\end_inset
+
+.
+\end_layout
+
+\end_deeper
+\begin_layout Proof
+This is derived from the proofs in Section 4 of 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "hmp01"
+literal "false"
+
+\end_inset
+
+.
+ To construct 
+\begin_inset Formula $d$
+\end_inset
+
+,
+ select a permutation 
+\begin_inset Formula $\pi:\left\{ 0,1\right\} ^{r}\rightarrow\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ for which 
+\begin_inset Formula $\left|F_{\pi\left(1\right)}\right|\ge\left|F_{\pi\left(2\right)}\right|\ge\ldots\ge\left|F_{\pi\left(2^{r}\right)}\right|$
+\end_inset
+
+.
+ (The last sets in the sequence will all be empty if 
+\begin_inset Formula $n<2^{r}$
+\end_inset
+
+.) Then in order,
+ for each 
+\begin_inset Formula $i\in\left[2^{r}\right]$
+\end_inset
+
+,
+ choose 
+\begin_inset Formula $d\left(\pi\left(i\right)\right)$
+\end_inset
+
+ to have value 
+\begin_inset Formula $a\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ so that the multiset 
+\begin_inset Formula $S_{a,i}:=\left(a\oplus g\left(j\right):h\in F_{\pi\left(i\right)}\right)$
+\end_inset
+
+ has no more than the average number of collisions with preceding multisets 
+\begin_inset Formula $\left\{ S_{d\left(\pi\left(j\right)\right),j}\right\} _{j<i}$
+\end_inset
+
+.
+ The number of collisions 
+\begin_inset Formula $c\left(A,B\right)$
+\end_inset
+
+ between two multisets 
+\begin_inset Formula $A=\left(a_{1},\ldots,a_{\left|A\right|}\right)$
+\end_inset
+
+ and 
+\begin_inset Formula $B=\left(b_{1},\ldots,b_{\left|B\right|}\right)$
+\end_inset
+
+ is defined as 
+\begin_inset Formula $\left|\left\{ x\in\left[\left|A\right|\right],y\in\left[\left|B\right|\right]:a_{x}=b_{y}\right\} \right|$
+\end_inset
+
+.
+ Specifically,
+ we want:
+\begin_inset Formula 
+\begin{align*}
+\sum_{j<i}c\left(S_{a,i},S_{d\left(\pi\left(j\right)\right),j}\right) & \le\left\lfloor \frac{1}{2^{r}}\sum_{b\in\left\{ 0,1\right\} }\sum_{j<i}c\left(S_{b,i},S_{d\left(\pi\left(j\right)\right),j}\right)\right\rfloor \\
+ & =\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\sum_{b\in\left\{ 0,1\right\} }c\left(S_{b,i},S_{d\left(\pi\left(j\right)\right),j}\right)\right\rfloor \\
+ & =\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\right\rfloor 
+\end{align*}
+
+\end_inset
+
+where the last step follows because for each 
+\begin_inset Formula $x\in F_{\pi\left(i\right)}$
+\end_inset
+
+,
+ 
+\begin_inset Formula $y\in F_{\pi\left(j\right)}$
+\end_inset
+
+ ,
+ there is exactly one value of 
+\begin_inset Formula $b\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ for which 
+\begin_inset Formula $b\oplus g\left(x\right)=d\left(\pi\left(j\right)\right)\oplus g\left(y\right)$
+\end_inset
+
+.
+ This can be done (even with multi-sets!) using a dynamic search table structure as described in Section 4.3 of 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "hmp01"
+literal "false"
+
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Proof
+The quantity 
+\begin_inset Formula $\sum_{j<i}c\left(S_{a,i},S_{d\left(\pi\left(j\right)\right),j}\right)$
+\end_inset
+
+ counts the total number of colliding pairs 
+\begin_inset Formula $a,b\in\left[n\right]$
+\end_inset
+
+ where 
+\begin_inset Formula $f\left(a\right)\ne f\left(b\right)$
+\end_inset
+
+ and 
+\begin_inset Formula $h\left(a\right)=h\left(b\right)$
+\end_inset
+
+.
+ Since 
+\begin_inset Formula $g\left(i\right)=h\left(i\right)\oplus d\left(f\left(i\right)\right)$
+\end_inset
+
+,
+ the number of colliding pairs where 
+\begin_inset Formula $a,b\in\left[n\right]$
+\end_inset
+
+ satisfy 
+\begin_inset Formula $f\left(a\right)=f\left(b\right)$
+\end_inset
+
+ and 
+\begin_inset Formula $h\left(a\right)=h\left(b\right)$
+\end_inset
+
+ is equal to 
+\begin_inset Formula $\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}$
+\end_inset
+
+ (the number of collisions that 
+\begin_inset Formula $\left(f,g\right)$
+\end_inset
+
+ have.) Consequently,
+\begin_inset Formula 
+\begin{align*}
+\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2} & =\sum_{i\in\left\{ 0,1\right\} ^{r}}\sum_{j<i}c\left(S_{a,i},S_{d\left(f\left(j\right)\right),j}\right)\\
+ & \le\sum_{i\in\left\{ 0,1\right\} ^{r}}\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\right\rfloor 
+\end{align*}
+
+\end_inset
+
+There are two ways to bound this.
+ First,
+ 
+\begin_inset Formula 
+\begin{align*}
+\sum_{i\in\left\{ 0,1\right\} ^{r}}\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\right\rfloor  & \le\frac{1}{2^{r}}\sum_{\left\{ i,j\right\} \in\binom{\left\{ 0,1\right\} ^{r}}{2}}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\\
+ & \le\frac{1}{2^{r}}\cdot\frac{1}{2}\left(\sum_{i,j\in\left\{ 0,1\right\} ^{r}}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|-\sum_{i\in\left[n\right]}\left|F_{\pi\left(i\right)}\right|^{2}\right)\\
+ & \le\frac{1}{2^{r}}\cdot\frac{n^{2}-n}{2}=\frac{1}{2^{r}}\binom{n}{2}
+\end{align*}
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Proof
+This bound does 
+\emph on
+not 
+\emph default
+use the permutation sort order;
+ the following one does (and needs it,
+ when 
+\begin_inset Formula $\left(F_{\pi\left(i\right)}\right)_{i\in\left[n\right]}$
+\end_inset
+
+ looks like 
+\begin_inset Formula $\sqrt{n},\sqrt{n},1,1,1\ldots,1$
+\end_inset
+
+).
+ Specifically:
+ 
+\begin_inset Formula 
+\begin{align*}
+\sum_{i\in\left\{ 0,1\right\} ^{r}}\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\right\rfloor  & \le n\max_{i\in\left\{ 0,1\right\} ^{r}}\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\right\rfloor \\
+ & \le n\max_{i\in\left\{ 0,1\right\} ^{r}}\begin{cases}
+\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(j\right)}\right|^{2}\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\ge2}}\\
+\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(j\right)}\right|\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\le1}}
+\end{cases}\\
+ & \le n\max_{i\in\left\{ 0,1\right\} ^{r}}\begin{cases}
+\left\lfloor \frac{1}{2^{r}}\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\ge2}}\\
+\left\lfloor \frac{1}{2^{r}}\left(n-1\right)\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\le1}}
+\end{cases}\\
+ & \le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)\right\rfloor 
+\end{align*}
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Lemma
+\begin_inset CommandInset label
+LatexCommand label
+name "lem:double-displacement"
+
+\end_inset
+
+
+\begin_inset Argument 1
+status collapsed
+
+\begin_layout Plain Layout
+Deterministic double displacement.
+\end_layout
+
+\end_inset
+
+ Applying Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+ twice,
+ with 
+\begin_inset Formula $r=\left\lceil \log_{2}n\right\rceil +1$
+\end_inset
+
+,
+ gives a perfect hash function mapping 
+\begin_inset Formula $n$
+\end_inset
+
+ unique pairs 
+\begin_inset Formula $\left(f_{i},g_{i}\right)_{i=1}^{n}$
+\end_inset
+
+ to values 
+\begin_inset Formula $\lambda_{i}\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Proof
+First,
+ apply Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+ to 
+\begin_inset Formula $\left(f_{i},g_{i}\right)_{i=1}^{n}$
+\end_inset
+
+,
+ producing 
+\begin_inset Formula $\left(h_{i}\right)_{i=1}^{n}$
+\end_inset
+
+ with each 
+\begin_inset Formula $h_{i}\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ satisfying 
+\begin_inset Formula $h_{i}=g_{i}\oplus d_{1,i}\left(f_{i}\right)$
+\end_inset
+
+ for some displacement function 
+\begin_inset Formula $d_{1}$
+\end_inset
+
+ from 
+\begin_inset Formula $\left\{ 0,1\right\} ^{r}\rightarrow\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+.
+ Then with 
+\begin_inset Formula $H_{x}:=\left\{ i\in\left[n\right]:h_{i}=x\right\} $
+\end_inset
+
+ as defined in Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+,
+ we have 
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}\le\frac{1}{2^{r}}\binom{n}{2}$
+\end_inset
+
+.
+ Next,
+ apply to Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+ to 
+\begin_inset Formula $\left(h_{i},f_{i}\right)_{i=1}^{n}$
+\end_inset
+
+,
+ producing 
+\begin_inset Formula $\left(\lambda_{i}\right)_{i=1}^{n}$
+\end_inset
+
+ with each 
+\begin_inset Formula $\lambda_{i}\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ satisfying 
+\begin_inset Formula $\lambda_{i}=f_{i}\oplus d_{2,i}\left(h_{i}\right)$
+\end_inset
+
+ for some displacement function 
+\begin_inset Formula $d_{2}:\left\{ 0,1\right\} ^{r}\rightarrow\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+.
+ Define 
+\begin_inset Formula $\Lambda_{x}:=\left\{ i\in\left[n\right]:\lambda_{i}=x\right\} $
+\end_inset
+
+.
+ Because 
+\begin_inset Formula $n\le2^{r}$
+\end_inset
+
+,
+\begin_inset Formula 
+\[
+\frac{n-1}{4}=\frac{1}{2n}\binom{n}{2}\ge\frac{1}{2^{r}}\binom{n}{2}\ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}\ge\frac{1}{4}\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}
+\]
+
+\end_inset
+
+so by the second bound in Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+:
+ 
+\begin_inset Formula 
+\[
+\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|\Lambda_{x}\right|}{2}\le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,n-1\right)\right\rfloor =0
+\]
+
+\end_inset
+
+because 
+\begin_inset Formula $2^{r}\ge n$
+\end_inset
+
+.
+ (Note:
+ the proof also works if one sets 
+\begin_inset Formula $r=\left\lceil \log_{2}n\right\rceil $
+\end_inset
+
+ for the first round and 
+\begin_inset Formula $r=\left\lceil \log_{2}n\right\rceil +1$
+\end_inset
+
+ for the second,
+ ensuring 
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}\le2\left(n-1\right)$
+\end_inset
+
+ and 
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|\Lambda_{x}\right|}{2}=0$
+\end_inset
+
+;
+ although doing this requires that all 
+\begin_inset Formula $g_{i}$
+\end_inset
+
+ are in 
+\begin_inset Formula $\left\{ 0,1\right\} ^{\left\lceil \log_{2}n\right\rceil }$
+\end_inset
+
+.)
+\end_layout
+
+\begin_layout Note
+The first and second bounds of Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+ do not fit together when 
+\begin_inset Formula $i\mapsto\left(f\left(i\right),g\left(i\right)\right)$
+\end_inset
+
+ is not one-to-one.
+ It is 
+\emph on
+possible
+\emph default
+ that,
+ when 
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n$
+\end_inset
+
+,
+ the bound 
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}=0$
+\end_inset
+
+ holds,
+ but proving or disproving this may require going into the details of the search table procedure.
+ (If there is a hard instance,
+ it might have each nonempty multiset 
+\begin_inset Formula $F_{x}$
+\end_inset
+
+ contain two distinct 
+\begin_inset Formula $g$
+\end_inset
+
+ values (possibly with duplicates) structured to trick the search procedure into using a small branch of the table.)
+\end_layout
+
+\begin_layout Note
+One approach to work around this issue is to use different search table design in the second phase,
+ which at the leaves of the dynamic frequency table only counts 
+\emph on
+whether
+\emph default
+ an element has been used,
+ not 
+\emph on
+how many times
+\emph default
+ it has been used;
+ and derives inner node values from the leaves.
+ Then we'd only need 
+\begin_inset Formula $\text{\left|F_{\pi\left(i\right)}\right|\sum_{j<i}\left|\mu\left(F_{\pi\left(j\right)}\right)\right|\le2^{r}}$
+\end_inset
+
+,
+ which might be more easily provable when 
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Bibliography
+\begin_inset CommandInset bibitem
+LatexCommand bibitem
+key "hmp01"
+literal "false"
+
+\end_inset
+
+ Hagerup,
+ Miltersen,
+ Pagh,
+ 
+\begin_inset Quotes eld
+\end_inset
+
+Deterministic Dictionaries
+\begin_inset Quotes erd
+\end_inset
+
+,
+ 2001,
+ 
+\begin_inset Flex URL
+status collapsed
+
+\begin_layout Plain Layout
+
+https://doi.org/10.1006/jagm.2001.1171
+\end_layout
+
+\end_inset
+
+.
+\end_layout
+
+\end_body
+\end_document
