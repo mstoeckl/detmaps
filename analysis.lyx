@@ -208,7 +208,7 @@ deduplication
 
 \begin_deeper
 \begin_layout Enumerate
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le\frac{1}{2^{r}}\binom{n}{2}$
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le\frac{1}{2^{r}}\binom{n}{2}$
 \end_inset
 
 
@@ -377,7 +377,7 @@ The quantity
  have.) Consequently,
 \begin_inset Formula 
 \begin{align*}
-\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2} & =\sum_{i\in\left\{ 0,1\right\} ^{r}}\sum_{j<i}c\left(S_{a,i},S_{d\left(f\left(j\right)\right),j}\right)\\
+\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2} & =\sum_{i\in\left\{ 0,1\right\} ^{r}}\sum_{j<i}c\left(S_{a,i},S_{d\left(f\left(j\right)\right),j}\right)\\
  & \le\sum_{i\in\left\{ 0,1\right\} ^{r}}\left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(i\right)}\right|\left|F_{\pi\left(j\right)}\right|\right\rfloor 
 \end{align*}
 
@@ -465,7 +465,7 @@ nolink "false"
 
  twice,
  with 
-\begin_inset Formula $r=\left\lceil \log_{2}n\right\rceil +1$
+\begin_inset Formula $r=\left\lceil \log_{2}\left(\alpha n\right)\right\rceil $
 \end_inset
 
 ,
@@ -479,6 +479,11 @@ nolink "false"
 
  to values 
 \begin_inset Formula $\lambda_{i}\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+,
+ when 
+\begin_inset Formula $\alpha\ge\sqrt{2}$
 \end_inset
 
 .
@@ -583,14 +588,10 @@ nolink "false"
 \end_inset
 
 .
- Because 
-\begin_inset Formula $n\le2^{r}$
-\end_inset
-
-,
+ Then:
 \begin_inset Formula 
 \[
-\frac{n-1}{4}=\frac{1}{2n}\binom{n}{2}\ge\frac{1}{2^{r}}\binom{n}{2}\ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}\ge\frac{1}{4}\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}
+\frac{1}{2^{r}}\binom{n}{2}\ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}\ge\frac{1}{4}\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}
 \]
 
 \end_inset
@@ -609,45 +610,15 @@ nolink "false"
 :
  
 \begin_inset Formula 
-\[
-\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|\Lambda_{x}\right|}{2}\le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,n-1\right)\right\rfloor =0
-\]
+\begin{align*}
+\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|\Lambda_{x}\right|}{2} & \le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,4\frac{1}{2^{r}}\binom{n}{2}\right)\right\rfloor \\
+ & =n\left\lfloor \frac{2}{2^{2r}}n\left(n-1\right)\right\rfloor  & \text{if \ensuremath{2^{r}\ge n}}\\
+ & =0 & \text{if \ensuremath{2^{r}\ge n\sqrt{2}}}
+\end{align*}
 
 \end_inset
 
-because 
-\begin_inset Formula $2^{r}\ge n$
-\end_inset
 
-.
- (Note:
- the proof also works if one sets 
-\begin_inset Formula $r=\left\lceil \log_{2}n\right\rceil $
-\end_inset
-
- for the first round and 
-\begin_inset Formula $r=\left\lceil \log_{2}n\right\rceil +1$
-\end_inset
-
- for the second,
- ensuring 
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}\le2\left(n-1\right)$
-\end_inset
-
- and 
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|\Lambda_{x}\right|}{2}=0$
-\end_inset
-
-;
- although doing this requires that all 
-\begin_inset Formula $g_{i}$
-\end_inset
-
- are in 
-\begin_inset Formula $\left\{ 0,1\right\} ^{\left\lceil \log_{2}n\right\rceil }$
-\end_inset
-
-.)
 \end_layout
 
 \begin_layout Note
@@ -673,12 +644,12 @@ possible
 \emph default
  that,
  when 
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n$
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n$
 \end_inset
 
 ,
  the bound 
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}=0$
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}=0$
 \end_inset
 
  holds,
@@ -696,8 +667,99 @@ possible
 \end_layout
 
 \begin_layout Note
-One approach to work around this issue is to use different search table design in the second phase,
- which at the leaves of the dynamic frequency table only counts 
+Say that for some 
+\begin_inset Formula $x$
+\end_inset
+
+,
+ 
+\begin_inset Formula $F_{x}$
+\end_inset
+
+ has 
+\begin_inset Formula $k=\left|\mu\left(F_{x}\right)\right|$
+\end_inset
+
+ equivalence classes by 
+\begin_inset Formula $\mu$
+\end_inset
+
+,
+ of sizes 
+\begin_inset Formula $a_{1},\ldots,a_{k}$
+\end_inset
+
+,
+ with all 
+\begin_inset Formula $a_{j}\ge1$
+\end_inset
+
+.
+ Because 
+\begin_inset Formula $\sum_{j\in\left[k\right]}\left(a_{j}-1\right)^{2}\le\left(\sum_{j\in\left[k\right]}\left(a_{j}-1\right)\right)^{2}$
+\end_inset
+
+:
+\begin_inset Formula 
+\begin{align*}
+\binom{\left|F_{x}\right|}{2} & -\sum_{i\in F_{x}}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\\
+ & =\binom{\left|F_{x}\right|}{2}-\sum_{j\in\left[k\right]}\binom{a_{j}}{2}\\
+ & =\binom{\left|F_{x}\right|}{2}-\frac{1}{2}\sum_{j\in\left[k\right]}\left[\left(a_{j}-1\right)^{2}+\left(a_{j}-1\right)\right]\\
+ & =\binom{\left|F_{x}\right|}{2}-\frac{1}{2}\left(\left|F_{x}\right|-k\right)-\frac{1}{2}\sum_{j\in\left[k\right]}\left(a_{j}-1\right)^{2}\\
+ & \ge\binom{\left|F_{x}\right|}{2}-\frac{1}{2}\left(\left|F_{x}\right|-k\right)-\frac{1}{2}\left(\left|F_{x}\right|-k\right)^{2}\\
+ & =\binom{\left|F_{x}\right|}{2}-\binom{\left|F_{x}\right|-k}{2}\\
+ & =\frac{1}{2}\left(\left|F_{x}\right|^{2}-\left|F_{x}\right|-\left(\left|F_{x}\right|-k\right)^{2}+\left(\left|F_{x}\right|-k\right)\right)\\
+ & =\frac{k}{2}\left(2\left|F_{x}\right|-k-1\right)
+\end{align*}
+
+\end_inset
+
+Therefore,
+ the nontrivial collision count 
+\begin_inset Formula $\kappa$
+\end_inset
+
+ satisfies:
+\begin_inset Formula 
+\begin{align*}
+\kappa:=\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2} & =\sum_{x\in\left\{ 0,1\right\} ^{r}}\left(\binom{\left|F_{x}\right|}{2}-\sum_{i\in F_{x}}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\right)\\
+ & \ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\frac{\left|\mu\left(F_{x}\right)\right|}{2}\left(2\left|F_{x}\right|-\left|\mu\left(F_{x}\right)\right|-1\right)
+\end{align*}
+
+\end_inset
+
+This can be used to bound the cost of 
+\emph on
+delayed
+\emph default
+ deduplication for the second displacement round.
+ For example,
+ for each 
+\begin_inset Formula $F_{x}$
+\end_inset
+
+,
+ one can by a variant of insertion sort construct a sorted list of unique elements in 
+\begin_inset Formula $O\left(\left|F_{x}\right|\left|\mu\left(F_{x}\right)\right|\right)$
+\end_inset
+
+ time,
+ which summed over all 
+\begin_inset Formula $x\in\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ is 
+\begin_inset Formula $O\left(n\right)$
+\end_inset
+
+.
+ Or the search table design can be modified so that,
+ when it is time to update table frequencies after choosing 
+\begin_inset Formula $d\left(\pi\left(i\right)\right)$
+\end_inset
+
+,
+ the leaves are updated to indicate just 
 \emph on
 whether
 \emph default
@@ -706,15 +768,37 @@ whether
 \emph on
 how many times
 \emph default
- it has been used;
- and derives inner node values from the leaves.
- Then we'd only need 
-\begin_inset Formula $\text{\left|F_{\pi\left(i\right)}\right|\sum_{j<i}\left|\mu\left(F_{\pi\left(j\right)}\right)\right|\le2^{r}}$
+ it has been used,
+ and the remaining values derived from the leaves.
+ Then the key quantity to bound would be:
+\begin_inset Formula 
+\begin{align*}
+\max_{i\in\left\{ 0,1\right\} ^{r}}\ensuremath{\left|F_{\pi\left(i\right)}\right|\sum_{j<i}\left|\mu\left(F_{\pi\left(j\right)}\right)\right|} & \le\max\left(n-1,\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|F_{x}\right|\ge2}\left|F_{x}\right|\left|\mu\left(F_{x}\right)\right|\right)\\
+ & \le\max\left(n-1,4\kappa\right)
+\end{align*}
+
+\end_inset
+
+The last inequality follows because if 
+\begin_inset Formula $\left|F_{x}\right|>\left|\mu\left(F_{x}\right)\right|$
 \end_inset
 
 ,
- which might be more easily provable when 
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n$
+ then 
+\begin_inset Formula $\left|\mu\left(F_{x}\right)\right|\left(2\left|F_{x}\right|-\left|\mu\left(F_{x}\right)\right|-1\right)\ge\left|F_{x}\right|\left|\mu\left(F_{x}\right)\right|$
+\end_inset
+
+,
+ while if 
+\begin_inset Formula $\left|F_{x}\right|=\left|\mu\left(F_{x}\right)\right|$
+\end_inset
+
+ and 
+\begin_inset Formula $\left|F_{x}\right|\ge2$
+\end_inset
+
+ then 
+\begin_inset Formula $\left|\mu\left(F_{x}\right)\right|\left(2\left|F_{x}\right|-\left|\mu\left(F_{x}\right)\right|-1\right)\ge\frac{1}{2}\left|\mu\left(F_{x}\right)\right|\left|F_{x}\right|$
 \end_inset
 
 .

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
+
+pub mod util;
 
 pub trait Dict<K, V> {
     fn new(data: &[(K, V)]) -> Self;
@@ -99,94 +101,6 @@ pub struct HagerupMP01Dict {
     non_key: u64,
 }
 
-#[cfg(target_arch = "x86_64")]
-unsafe fn clmul_x86(a: u64, b: u64) -> u128 {
-    use std::arch::x86_64::*;
-    let ma = _mm_set_epi64x(0, a as i64);
-    let mb = _mm_set_epi64x(0, b as i64);
-    let y = _mm_clmulepi64_si128::<0>(ma, mb);
-    ((_mm_extract_epi64::<0>(y) as u64) as u128)
-        | (((_mm_extract_epi64::<1>(y) as u64) as u128) << 64)
-}
-
-#[cfg(any(not(target_arch = "x86_64"), test))]
-fn clmul_generic(a: u64, b: u64) -> u128 {
-    // note: compilers might be able to figure out this idiom
-    let mut v = 0_u128;
-    for i in 0..64 {
-        v ^= ((a as u128) & (1 << i)) * (b as u128);
-    }
-    v
-}
-#[cfg(target_arch = "x86_64")]
-pub fn clmul(a: u64, b: u64) -> u128 {
-    unsafe { clmul_x86(a, b) }
-}
-#[cfg(not(target_arch = "x86_64"))]
-pub fn clmul(a: u64, b: u64) -> u128 {
-    clmul_generic(a, b)
-}
-#[cfg(target_arch = "x86_64")]
-#[test]
-fn test_clmul() {
-    for i in 0..100 {
-        for j in 0..100 {
-            let f = 1e19 as u64;
-            assert!(
-                clmul(f.wrapping_mul(i), f.wrapping_mul(j))
-                    == clmul_generic(f.wrapping_mul(i), f.wrapping_mul(j))
-            );
-        }
-    }
-}
-
-#[cfg(any(not(all(target_arch = "x86_64", target_feature = "bmi2")), test))]
-/* Extract the bits in `val` at positions in `mask` to the lowest order bits */
-fn pext_generic(val: u128, mask: u128) -> u128 {
-    /* Lemma 3.3 suggests a fancy multiply+subhash trick (because the paper
-     * needs "constant-time" in its RAM model, and this step only needs to preserve
-     * uniqueness); modern CPUs have `pext` or equivalent. */
-    let mut x = 0;
-    let mut j = 0;
-    for i in 0..128 {
-        if mask & (1 << i) != 0 {
-            x |= (val & (1 << i)) >> (i - j);
-            j += 1;
-        }
-    }
-    x
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-unsafe fn pext_x86(val: u128, mask: u128) -> u128 {
-    use std::arch::x86_64::*;
-    let low = _pext_u64(val as u64, mask as u64);
-    let high = _pext_u64((val >> 64) as u64, (mask >> 64) as u64);
-    let step = (mask as u64).count_ones();
-    (low as u128) | ((high as u128) << step)
-}
-#[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-pub fn pext(val: u128, mask: u128) -> u128 {
-    unsafe { pext_x86(val, mask) }
-}
-#[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
-pub fn pext(val: u128, mask: u128) -> u128 {
-    pext_generic(val, mask)
-}
-#[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-#[test]
-fn test_pext() {
-    for i in 0..100 {
-        for j in 0..100 {
-            let f = 1e38 as u128;
-            assert!(
-                pext(f.wrapping_mul(i), f.wrapping_mul(j))
-                    == pext_generic(f.wrapping_mul(i), f.wrapping_mul(j))
-            );
-        }
-    }
-}
-
 /** Error correcting code from u32->u128 with ẟ = 30/128. */
 fn error_correcting_code(x: u32) -> u128 {
     /* Per Prop 3.1 of HagerupMP01, a random (2,2)-universal function
@@ -231,7 +145,7 @@ fn error_correcting_code(x: u32) -> u128 {
      */
     let k1 = 4989641109508346571;
     let k2 = 3213968901338125373;
-    clmul(x as u64, k1) ^ (clmul(x as u64, k2) << 64)
+    util::clmul(x as u64, k1) ^ (util::clmul(x as u64, k2) << 64)
 }
 
 /** Given an array of encoded values, produce a small bitmask indicating
@@ -373,7 +287,7 @@ fn test_hmp01_universe_reduction() {
     // As of writing, this is very slow (30 seconds/1e6 elements)
     let d = find_distinguishing_positions(&y);
     println!("d: {:0128b}, popcount {}", d, d.count_ones());
-    let mut z: Vec<u128> = y.iter().map(|a| pext(*a, d)).collect();
+    let mut z: Vec<u128> = y.iter().map(|a| util::pext(*a, d)).collect();
     z.sort_unstable();
     for w in z.windows(2) {
         assert!(w[0] != w[1]);
@@ -605,7 +519,7 @@ impl Dict<u64, u64> for HagerupMP01Dict {
             .iter()
             .map(|(k, v)| {
                 let sk: u32 = (*k).try_into().unwrap();
-                (pext(error_correcting_code(sk), d), *v)
+                (util::pext(error_correcting_code(sk), d), *v)
             })
             .collect();
 
@@ -706,7 +620,7 @@ impl Dict<u64, u64> for HagerupMP01Dict {
         assert!(key <= u32::MAX as u64);
         // First, reduce universe
         let k: u32 = key.try_into().unwrap();
-        let d = pext(error_correcting_code(k), self.distinguishing_bits);
+        let d = util::pext(error_correcting_code(k), self.distinguishing_bits);
 
         let mut val = (d & ((1 << self.r_bits) - 1)) as u64;
         for (i, h) in self.hashes.iter().enumerate() {
@@ -852,6 +766,233 @@ fn test_hmp01_unreduced() {
         .map(|x| ((x * x * x * x), x))
         .collect();
     let hash = HMP01UnreducedDict::new(&x);
+    for (k, v) in x {
+        assert!(Some(v) == hash.query(k));
+    }
+}
+
+/* ---------------------------------------------------------------------------- */
+
+struct Ruzic09BReduction {
+    // Multipliers; with each mask-multiply-shift-add step, domain size is reduced by half,
+    // from 64 to 32 to 16 bits.
+    steps: Vec<(u64, u32)>,
+    // Number of bits of the final output
+    end_bits: u32,
+}
+
+fn find_good_multiplier_fast(keys: &[u64], s: u32, max_mult_bits: u32) -> u64 {
+    // binary search to find multiplier
+    let mut low = 1u64; // skip 0, it makes collisions
+    let mut high = 1 << max_mult_bits;
+
+    fn est_bad_parameters(keys: &[u64], s: u32, low: u64, high: u64) -> u64 {
+        // TODO: this may be oversimplified and thus incorrect in some cases
+        // (e.g.: how should duplicates be handled?)
+
+        let mut phi_indices: Vec<usize> = (0..keys.len()).collect();
+        let mut f_indices: Vec<usize> = (0..keys.len()).collect();
+        // So: does unstable sorting just overestimate?
+        phi_indices.sort_unstable_by_key(|x| (keys[*x] >> s) + low * (keys[*x] & ((1 << s) - 1)));
+        f_indices.sort_unstable_by_key(|x| (keys[*x] >> s) + high * (keys[*x] & ((1 << s) - 1)));
+
+        // This overestimates inversions by up to a factor of 2
+        let mut est_invs = 0;
+        for (i_phi, i_f) in phi_indices.iter().zip(f_indices.iter()) {
+            est_invs += i_phi.abs_diff(*i_f) as u64;
+        }
+        2 * est_invs
+    }
+
+    // Does using n(n-1)/2 help in any case?
+    let mut bad_param_est = (keys.len().checked_mul(keys.len()).unwrap() / 2) as u64;
+    while low < high {
+        let mid = low + (high - low) / 2;
+
+        let m1est = est_bad_parameters(keys, s, low, mid);
+        /* Each iteration should reduce the estimate to <= 2/3 of the previous value */
+        if m1est <= (2 * bad_param_est) / 3 {
+            high = mid;
+        } else {
+            low = mid;
+        }
+        bad_param_est = (2 * bad_param_est) / 3;
+    }
+    assert!(bad_param_est == 0);
+
+    low
+}
+
+impl Ruzic09BReduction {
+    fn new_fast(kvs: &[(u64, u64)]) -> Ruzic09BReduction {
+        let mut keys: Vec<u64> = kvs.iter().map(|x| x.0).collect();
+        let n_bits = 64 - keys.len().leading_zeros();
+        let mut u_bits = 64;
+        let max_mult_bits = n_bits * 4; // more precisely, 2/log2(3/2) = 3.419
+
+        // println!("n {} u {} mm {}", n_bits, u_bits, max_mult_bits);
+
+        // Number of bits approaches 4*n_bits
+        let mut mults = Vec::new();
+        while u_bits > max_mult_bits + n_bits {
+            let s = (u_bits - max_mult_bits) / 2;
+            // println!("n {} u {} s {}", n_bits, u_bits, s);
+            let a = find_good_multiplier_fast(&keys, s, max_mult_bits);
+            mults.push((a, s));
+            for k in keys.iter_mut() {
+                *k = (*k >> s) + a * (*k & ((1 << s) - 1));
+            }
+            if false {
+                // Verify multiplier actually works
+                let mut b = BTreeSet::new();
+                for k in keys.iter() {
+                    assert!(b.insert(k), "duplicate value: {}", k);
+                }
+            }
+
+            u_bits = s + max_mult_bits;
+        }
+
+        Ruzic09BReduction {
+            steps: mults,
+            end_bits: u_bits,
+        }
+    }
+    #[allow(dead_code)]
+    fn new_precise(_kvs: &[(u64, u64)]) -> Ruzic09BReduction {
+        // Why isn't O(n^2) possible?
+
+        /* There have been improvements to the problem of counting the number of permutation inversions;
+         * since Ružić09 was written. See e.g. Chan & Pǎtraşcu 2010,
+         * "Counting Inversions, Offline Orthogonal Range Coutning, and Related Problems" */
+        todo!();
+    }
+
+    fn apply(&self, mut key: u64) -> u64 {
+        for (a, s) in self.steps.iter() {
+            key = (key >> s) + a * (key & ((1 << s) - 1));
+        }
+        key
+    }
+}
+
+pub struct R09BxHMP01Dict {
+    reduction: Ruzic09BReduction,
+
+    r_bits: u32,
+    // TODO: use a binary tree merge instead of a sequence of hashes
+    hashes: Vec<HMPQuadHash>,
+    /** Table of key-value pairs indexed by the perfect hash construction */
+    table: Vec<(u64, u64)>,
+    /** A value which is not a valid key */
+    non_key: u64,
+}
+
+impl Dict<u64, u64> for R09BxHMP01Dict {
+    fn new(data: &[(u64, u64)]) -> R09BxHMP01Dict {
+        let reduction = Ruzic09BReduction::new_fast(data);
+
+        let reduced_data: Vec<(u64, u64)> = data
+            .iter()
+            .map(|(k, v)| (reduction.apply(*k), *v))
+            .collect();
+
+        let n_bits = reduced_data
+            .len()
+            .checked_next_power_of_two()
+            .unwrap()
+            .trailing_zeros();
+        let r_bits = n_bits + 1;
+        let steps = reduction.end_bits.max(1).div_ceil(r_bits) - 1;
+
+        let mut lead: Vec<u64> = reduced_data
+            .iter()
+            .map(|(k, _v)| *k & ((1 << r_bits) - 1))
+            .collect();
+
+        let mut hashes: Vec<HMPQuadHash> = Vec::new();
+        for round in 0..steps {
+            let mut pairs: Vec<(u64, u64)> = lead
+                .iter()
+                .zip(reduced_data.iter())
+                .map(|(f, (k, _v))| (*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)))
+                .collect();
+
+            // Deduplicate pairs, because we do not yet know for certain if the quadratic reduction hash can handle them
+            // TODO: extract into a function and test independently
+            pairs.sort_unstable();
+            let mut w = 1;
+            for r in 1..pairs.len() {
+                if pairs[r] != pairs[w - 1] {
+                    pairs[w] = pairs[r];
+                    w += 1;
+                }
+            }
+            pairs.truncate(w);
+
+            let hash = HMPQuadHash::new(&pairs, r_bits);
+
+            lead = lead
+                .iter()
+                .zip(reduced_data.iter())
+                .map(|(f, (k, _v))| {
+                    hash.query(*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1))
+                })
+                .collect();
+
+            hashes.push(hash);
+        }
+
+        // Identify a value which is _not_ a valid key.
+        let mut is_key: Vec<bool> = vec![false; data.len()];
+        for (k, _v) in data {
+            if *k < data.len() as u64 {
+                is_key[*k as usize] = true;
+            }
+        }
+        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
+
+        // Fill table entries
+        let r_bits = hashes[0].r_bits;
+        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << r_bits];
+        for (i, v) in lead.iter().enumerate() {
+            table[*v as usize] = data[i];
+        }
+
+        R09BxHMP01Dict {
+            reduction,
+            r_bits,
+            hashes,
+            table,
+            non_key,
+        }
+    }
+    fn query(&self, key: u64) -> Option<u64> {
+        let d = self.reduction.apply(key);
+        let mut val = d & ((1 << self.r_bits) - 1);
+        // TODO: better construction than iterative
+        for (i, h) in self.hashes.iter().enumerate() {
+            let nxt = (d >> ((i as u32 + 1) * (self.r_bits))) & ((1 << self.r_bits) - 1);
+            val = h.query(val, nxt);
+        }
+        let entry = self.table[val as usize];
+        if entry.0 != key || key == self.non_key {
+            None
+        } else {
+            Some(entry.1)
+        }
+    }
+}
+
+#[test]
+fn test_r09xhmp01_dict() {
+    let x: Vec<(u64, u64)> = (0..(u8::MAX as u64)).map(|x| (x.pow(8), x)).collect();
+    let hash = R09BxHMP01Dict::new(&x);
+    for (k, v) in x {
+        assert!(Some(v) == hash.query(k));
+    }
+    let x: Vec<(u64, u64)> = (0..(1u64 << 10)).map(|x| (x.pow(6), x)).collect();
+    let hash = R09BxHMP01Dict::new(&x);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }

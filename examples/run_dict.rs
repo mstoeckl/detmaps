@@ -26,21 +26,26 @@ fn make_random_order_32(n: u64, seed_vals: u64, seed_order: u64) -> Vec<u64> {
         .collect()
 }
 
+#[inline(never)]
+fn do_par_queries<D: Dict<u64, u64>>(dict: &D, queries: &[u64]) {
+    let mut x = 0;
+    for q in queries.iter() {
+        x += dict.query(*q).unwrap();
+    }
+    std::hint::black_box(x);
+}
+
 fn main() {
     // TODO: control dictionary type, size, pattern through argv
 
-    let sz = 1 << 22;
+    let sz = 1 << 18;
     let data = &make_random_sampled_32(sz, 1);
     let queries = std::hint::black_box(make_random_order_32(sz, 1, 1111));
     let t0 = Instant::now();
 
     let dict = std::hint::black_box(HagerupMP01Dict::new(&data));
     let t1 = Instant::now();
-    let mut x = 0;
-    for q in queries.iter() {
-        x += dict.query(*q).unwrap_or(0);
-    }
-    std::hint::black_box(x);
+    do_par_queries(&dict, &queries);
     let t2 = Instant::now();
     println!(
         "size: {}; construction time: {} secs; query time: {} secs",

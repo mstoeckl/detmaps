@@ -14,5 +14,6 @@ harness = false
 
 [profile.release]
 debug = true
+lto = true
 
 # Recommended options: RUSTFLAGS=-Ctarget-cpu=native

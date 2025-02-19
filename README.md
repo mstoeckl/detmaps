@@ -10,8 +10,8 @@ query times can be better or worse depending on what algorithm you compare with.
 #### Deterministic dictionaries
 
 - Hagerup, Miltersen, Pagh 2001, "Deterministic Dictionaries": implemented (with
-  mild optimizations, for specific parameters); construction time O(n log n),
-  query time O(1)
+  mild optimizations, and simplifications, with specific parameters); construction
+  time roughly O(n log n), query time O(1)
 - Ružić 2009 papers: todo
 
 #### Simple approaches:
@@ -42,6 +42,9 @@ Some of these are attainable with randomized constructions.
   worst-case behavior.
 - Dictionaries have not been specialized to use optimal type widths for each
   input size.
+- The simple/reference approaches are what the standard library provides, and
+  have not been optimized for this specific task. Other data structures with fast
+  queries and more specialized hash table designs may perform _much_ better.
 
 ### Related data structures:
 
@@ -54,7 +57,18 @@ MPLv2
 
 ### Results:
 
-![plot](rand32.svg)
+See the source code for details on the implementations being compared and how they deviate
+from the ideal constructions in the papers.
+
+* rand32: pseudorandom u64 keys in 0..u32::MAX
+* rand64: pseudorandom u64 keys in 0..u64::MAX
+
+* setup: Time to construct the dictionary
+* parq: Query every element _in_ the dictionary, with no dependency between successive queries
+* chainq: Query every element _in_ the dictionary, with a logical dependency between successive dictionary queries
+
+![rand32 results](rand32.svg)
+![rand64 results](rand64.svg)
 
 ### Notes:
 

@@ -1,40 +1,10 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 use criterion::{
-    black_box, criterion_group, criterion_main, measurement::WallTime, AxisScale, BatchSize,
-    BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput,
+    criterion_group, criterion_main, measurement::WallTime, AxisScale, BatchSize, BenchmarkGroup,
+    BenchmarkId, Criterion, PlotConfiguration, Throughput,
 };
 use detmaps::*;
 use std::time::Duration;
-
-/** Generate a sorted sequence of the first n integers */
-fn make_sequential(n: u64) -> Vec<(u64, u64)> {
-    (0..n).map(|x| (x, x)).collect()
-}
-fn ith_random_sampled_32(i: u64, seed: u64) -> u64 {
-    /* Now 2^32 and p are coprime, so (x*p)%n is a permutation. */
-    let p = (seed.wrapping_mul(0x9e3779b97f4a7c16)) | 0x1;
-    ((i as u128 * p as u128) % (1u128 << 32)) as u64
-}
-
-/** Generate n pseudo-random samples in 0..=u32::MAX _without_ repetition. */
-fn make_random_sampled_32(n: u64, seed: u64) -> Vec<(u64, u64)> {
-    (0..n)
-        .map(|x| (ith_random_sampled_32(x, seed), x))
-        .collect()
-}
-
-/** Generate n pseudo-random samples from the first n entries of `make_random_sampled_32`, _without_ repetition.
- * TODO: make this an iterator, to reduce space overhead */
-fn make_random_order_32(n: u64, seed_vals: u64, seed_order: u64) -> Vec<u64> {
-    assert!(n.is_power_of_two());
-    /* Now n and p are coprime, so (x*p)%n is a permutation. */
-    (0..n)
-        .map(|x| {
-            let y = ith_random_sampled_32(x, seed_order) % n;
-            ith_random_sampled_32(y, seed_vals)
-        })
-        .collect()
-}
 
 /** Setup load for sequ */
 fn time_setup<T: Dict<u64, u64>>(data: &[(u64, u64)]) -> u64 {
@@ -44,54 +14,58 @@ fn time_setup<T: Dict<u64, u64>>(data: &[(u64, u64)]) -> u64 {
 fn get_setup<T: Dict<u64, u64>>(data: &[(u64, u64)]) -> T {
     T::new(&data)
 }
-/** Query load: every element in 0..n. Access pattern is very friendly to some dictionaries, but not others.
- * TODO: is there a standard 'high discrepancy' permutation, or do e.g. `n` random samples in [0..n] with XorShift suffice?
- */
-fn sequential_time_query<T: Dict<u64, u64>>(d: &T, n: u64) -> u64 {
-    let mut x = 0;
-    for i in 0..n {
-        x += d.query(i).unwrap_or(0);
-    }
-    x
-}
 
-fn ordered_time_query<T: Dict<u64, u64>>(d: &T, queries: &[u64]) -> u64 {
-    let mut x = 0;
-    for q in queries {
-        x += d.query(*q).unwrap_or(0);
-    }
-    x
-}
-
-fn bench_rand32<T: Dict<u64, u64>>(bits: u32, group: &mut BenchmarkGroup<WallTime>, name: &str) {
+fn bench_group<T: Dict<u64, u64>>(
+    bits: u32,
+    group: &mut BenchmarkGroup<WallTime>,
+    name: &str,
+    pattern: &str,
+    make_random_chain: fn(u64, u64, u64) -> Vec<(u64, u64)>,
+) {
     let sz: u64 = 1 << bits;
     let seed_vals = 1;
     let seed_order = 1111;
 
     group.bench_with_input(
-        BenchmarkId::new(format!("rand32_{}_setup", name), bits),
+        BenchmarkId::new(format!("{}_{}_setup", pattern, name), bits),
         &sz,
         |b, &sz| {
             b.iter_batched(
-                || make_random_sampled_32(sz, seed_vals),
+                || make_random_chain(sz, seed_vals, seed_order),
                 |x| time_setup::<T>(&x),
                 BatchSize::PerIteration,
             );
         },
     );
+    // TODO: setup is always the same for deterministic case, and expensive; can deduplicate?
+
+    // TODO: a) properly randomize initial seeds, for every run
     group.bench_with_input(
-        BenchmarkId::new(format!("rand32_{}_query", name), bits),
+        BenchmarkId::new(format!("{}_{}_chainq", pattern, name), bits),
         &sz,
         |b, &sz| {
-            // TODO: setup is always the same for deterministic case, and expensive; can deduplicate?
             b.iter_batched(
                 || {
-                    (
-                        get_setup::<T>(&make_random_sampled_32(sz, seed_vals)),
-                        make_random_order_32(sz, seed_vals, seed_order),
-                    )
+                    let chain = make_random_chain(sz, seed_vals, seed_order);
+                    let d = get_setup::<T>(&chain);
+                    (d, chain)
                 },
-                |x| ordered_time_query(&x.0, &x.1),
+                |x| util::chain_query(&x.0, &x.1),
+                BatchSize::PerIteration,
+            );
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::new(format!("{}_{}_parq", pattern, name), bits),
+        &sz,
+        |b, &sz| {
+            b.iter_batched(
+                || {
+                    let chain = make_random_chain(sz, seed_vals, seed_order);
+                    let d = get_setup::<T>(&chain);
+                    (d, chain)
+                },
+                |x| util::parallel_query(&x.0, &x.1),
                 BatchSize::PerIteration,
             );
         },
@@ -112,20 +86,35 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(std::mem::size_of::<u64>() as u64 * sz));
 
         // TODO: add 'hard_timeout' option either in criterion or with workaround
-        if bits <= 25 {
-            bench_rand32::<BinSearchDict<u64, u64>>(bits, &mut group, "binsearch");
-        }
-        if bits <= 28 {
-            bench_rand32::<BTreeDict<u64, u64>>(bits, &mut group, "btree");
-        }
-        if bits <= 27 {
-            bench_rand32::<HashDict<u64, u64>>(bits, &mut group, "hash");
-        }
-        if bits <= 20 {
-            bench_rand32::<HagerupMP01Dict>(bits, &mut group, "hmp01");
-        }
-        if bits <= 22 {
-            bench_rand32::<HMP01UnreducedDict>(bits, &mut group, "hmp01u");
+        let patopts: [(&str, fn(u64, u64, u64) -> Vec<(u64, u64)>); 2] = [
+            ("rand32", util::make_random_chain_32),
+            ("rand64", util::make_random_chain_64),
+        ];
+        for (pattern, patfn) in patopts.iter() {
+            if bits <= 25 {
+                bench_group::<BinSearchDict<u64, u64>>(
+                    bits,
+                    &mut group,
+                    "binsearch",
+                    pattern,
+                    *patfn,
+                );
+            }
+            if bits <= 28 {
+                bench_group::<BTreeDict<u64, u64>>(bits, &mut group, "btree", pattern, *patfn);
+            }
+            if bits <= 27 {
+                bench_group::<HashDict<u64, u64>>(bits, &mut group, "hash", pattern, *patfn);
+            }
+            if bits <= 20 && *pattern == "rand32" {
+                bench_group::<HagerupMP01Dict>(bits, &mut group, "hmp01", pattern, *patfn);
+            }
+            if bits <= 25 {
+                bench_group::<HMP01UnreducedDict>(bits, &mut group, "hmp01u", pattern, *patfn);
+            }
+            if bits <= 22 {
+                bench_group::<R09BxHMP01Dict>(bits, &mut group, "r09bxhmp01", pattern, *patfn);
+            }
         }
     }
     group.finish();

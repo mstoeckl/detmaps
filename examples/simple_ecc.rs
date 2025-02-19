@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 /*! Test program: find a simple error correcting code for e.g. u32->u128 */
 
-use detmaps::clmul;
+use detmaps::util::clmul;
 use rayon::prelude::*;
 
 fn xorshift(mut x: u64) -> u64 {

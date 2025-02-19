@@ -49,10 +49,12 @@ def main():
 
         all_results[name_parts] = bench_results
 
-    for category in ["rand32"]:
+    color_map = {}
+    line_style = {"chainq": ":", "parq": "--", "setup": "-"}
+    markers = {"chainq": ".", "parq": ".", "setup": "p"}
+    for category in ["rand32", "rand64"]:
         fig, ax = plt.subplots()
-        line_style = {"query": "--", "setup": "-"}
-        color_map = {}
+        fig.set_size_inches(20 / 2.54, 15 / 2.54)
 
         for (cat, dict_name, step), vals in sorted(all_results.items()):
             if cat != category:
@@ -73,13 +75,16 @@ def main():
                 ests[:, 0],
                 yerr=(ests[:, 0] - ests[:, 1], ests[:, 2] - ests[:, 0]),
                 label=(dict_name + " " + step),
-                marker=".",
+                marker=markers[step],
                 ls=line_style[step],
                 color=color_map[dict_name],
             )
 
         ax.set_yscale("log")
         ax.set_ylabel("Time per element (ns)")
+        ax.set_ylim(
+            3, 2e4
+        )  # set a 'uniform' ylimit to make cross-plot and cross-computer comparison easier
         xticks = list(range(0, 33, 4))
         ax.set_xticks(xticks)
         ax.set_xticklabels(["$2^{" + str(x) + "}$" for x in xticks])
