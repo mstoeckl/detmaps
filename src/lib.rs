@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
 
@@ -993,6 +994,440 @@ fn test_r09xhmp01_dict() {
     }
     let x: Vec<(u64, u64)> = (0..(1u64 << 10)).map(|x| (x.pow(6), x)).collect();
     let hash = R09BxHMP01Dict::new(&x);
+    for (k, v) in x {
+        assert!(Some(v) == hash.query(k));
+    }
+}
+
+/* ---------------------------------------------------------------------------- */
+
+/** Deterministic variant of tabulation hashing from [N]^k to [N^2], followed
+ * by double displacement hashing for the last [N^2] -> [N] step.
+ *
+ * This is rather memory intensive and the most efficient form of [Ruzic09BReduction]
+ * likely uses much less memory and is faster; but it should query fewer cache lines
+ * than [HMP01UnreducedDict] on fully random u64 input.
+ *
+ * TODO: make generic and replace u128/u64 with smallest types that fit 2*r_bits and r_bits
+ *
+ * Requires: key space <2^64. */
+pub struct XorReducedDict {
+    /** For [2^r]^k -> [2^{2r}], this table has 'k-2' entries; the processing for the
+     * first two table entries is explicit.
+     *
+     * The first implicit entry uses the identity map; the second
+     * uses 'x -> x << r'. */
+    xor_table: Vec<Vec<u128>>,
+    quad: HMPQuadHash,
+    r_bits: u32,
+    table: Vec<(u64, u64)>,
+    non_key: u64,
+}
+
+/** Return value `x` so that $A \cap {b \oplus x}_{x \in B} = \emptyset$.
+ *
+ * Assumes all entries of A and B are <2^u, and produces output <2^u.
+ *
+ * This _should_ run in O(n log n) time once fully implemented, but for now
+ * does O(n (log n)^2) due to not radix sorting.
+ *
+ * Only the trivial Ω(n) lower bound is known. Can this be solved more efficiently?
+ */
+fn xor_distinguish(ra: &[u128], rb: &[u128], u_bits: u32) -> u128 {
+    assert!(ra.len().checked_mul(rb.len()).unwrap() < 1usize.checked_shl(u_bits).unwrap());
+
+    // minor optimization: access through &mut a[..], &mut b[..] instead of &[], &[]
+    // as contents only need to be permuted
+    let mut a = Vec::from(ra);
+    let mut b = Vec::from(rb);
+
+    let mut x = 0;
+    const CHUNK_BITS: u32 = 4;
+    for i in 0..u_bits.div_ceil(CHUNK_BITS) {
+        /* Upper bounds on the number of collisions if the next byte of `x`
+         * is chosen to be a given value */
+        let mut collision_counters = [0u64; 1 << CHUNK_BITS];
+
+        // TODO: incrementally sort bits C*i..C*(i+1) in a and b instead of doing a full sort
+        // (On 1M-sized inputs, this may give factor >=2 speedups)
+        a.sort_unstable_by_key(|v| v.reverse_bits());
+        b.sort_unstable_by_key(|v| (v ^ x).reverse_bits());
+
+        let prefix_mask: u128 = (1 << (CHUNK_BITS * i)) - 1;
+        let chunk_mask: u128 = (1 << CHUNK_BITS) - 1;
+
+        /* Iterate over distinct (little-endian) prefixes of 'a' and 'b^x'; and count,
+         * for each overlapping prefix group */
+        let mut sa = 0;
+        let mut sb = 0;
+        while sa < a.len() && sb < b.len() {
+            let apr = (a[sa] & prefix_mask).reverse_bits();
+            let bpr = ((b[sb] ^ x) & prefix_mask).reverse_bits();
+
+            match apr.cmp(&bpr) {
+                Ordering::Less => {
+                    sa += 1;
+                    continue;
+                }
+                Ordering::Greater => {
+                    sb += 1;
+                    continue;
+                }
+                Ordering::Equal => (),
+            }
+            let common_prefix = a[sa] & prefix_mask;
+            assert!(common_prefix == (b[sb] ^ x) & prefix_mask);
+            let mut ia = sa;
+            while ia < a.len() && (a[ia] & prefix_mask) == common_prefix {
+                ia += 1;
+            }
+            let mut ib = sb;
+            while ib < b.len() && ((b[ib] ^ x) & prefix_mask) == common_prefix {
+                ib += 1;
+            }
+
+            /* Now: &a[sa..ia] and &b[sb..ib] should all share the same prefix,
+             * so process collisions in this sub-block */
+            for v in &a[sa..ia] {
+                assert!(*v & prefix_mask == common_prefix);
+            }
+            for v in &b[sb..ib] {
+                assert!((*v ^ x) & prefix_mask == common_prefix);
+            }
+
+            let mut a_counters = [0u64; 1 << CHUNK_BITS];
+            let mut b_counters = [0u64; 1 << CHUNK_BITS];
+            for v in &a[sa..ia] {
+                a_counters[((v >> (CHUNK_BITS * i)) & chunk_mask) as usize] += 1;
+            }
+            assert!((x >> (CHUNK_BITS * i)) & chunk_mask == 0);
+            for v in &b[sb..ib] {
+                b_counters[((v >> (CHUNK_BITS * i)) & chunk_mask) as usize] += 1;
+            }
+            // println!("{} {:?} {:?}", common_prefix, a_counters, b_counters);
+            for x in 0..(1 << CHUNK_BITS) {
+                for i in 0..(1 << CHUNK_BITS) {
+                    // todo: overflow risk if both a,b lengths are >= 2^32
+                    collision_counters[x] += a_counters[i] * b_counters[x ^ i];
+                }
+            }
+
+            /* Move to next block. */
+            sa = ia;
+            sb = ib;
+        }
+
+        let best_disp = collision_counters
+            .iter()
+            .enumerate()
+            .min_by_key(|x| *x.1)
+            .unwrap()
+            .0;
+        // println!("{:?} {:x} {:x}", collision_counters, best_disp, x);
+        x ^= (best_disp as u128) << (CHUNK_BITS * i);
+    }
+
+    x
+}
+
+#[cfg(test)]
+fn xor_distinguish_simple(a: &[u128], b: &[u128]) -> u128 {
+    let mut x = vec![false; a.len() * b.len()];
+    for va in a.iter() {
+        for vb in b.iter() {
+            let v = va ^ vb;
+            if v < x.len() as u128 {
+                x[v as usize] = true;
+            }
+        }
+    }
+    let f = x.iter().position(|x| !x).unwrap_or(a.len() * b.len()) as u128;
+    f
+}
+
+#[test]
+fn test_xor_distinguish() {
+    fn test_disjointness(a: &[u128], b: &[u128], x: u128) {
+        let sa: BTreeSet<u128> = BTreeSet::from_iter(a.iter().map(|v| *v));
+        let sbx: BTreeSet<u128> = BTreeSet::from_iter(b.iter().map(|v| (*v ^ x)));
+        assert!(sa.is_disjoint(&sbx));
+    }
+
+    fn test_pair(a: Vec<u128>, b: Vec<u128>, u_bits: u32) {
+        let x = xor_distinguish_simple(&a, &b);
+        let y = xor_distinguish(&a, &b, u_bits);
+        println!("x {} y {}", x, y);
+        test_disjointness(&a, &b, x);
+        test_disjointness(&a, &b, y);
+    }
+
+    test_pair((0..100).collect(), (50..300).collect(), 16);
+    test_pair((50..300).collect(), (0..100).collect(), 16);
+    test_pair((0..256).collect(), (0..255).map(|x| (x << 8)).collect(), 16);
+    test_pair((0..255).map(|x| (x << 8)).collect(), (0..256).collect(), 16);
+    test_pair(
+        (0..255).map(|x| x / 4).collect(),
+        (0..256).map(|x| x / 4).collect(),
+        16,
+    );
+    test_pair(vec![0, 1, 3], vec![0, 7], 3);
+}
+
+fn next_log_power_of_two(v: usize) -> u32 {
+    usize::BITS - v.leading_zeros()
+}
+
+/** Given r-bit keys and arbitrary 2r-bit `prev`, return a vector `v` with 2r bit
+ * entries so that { prev[i] ^ v[keys[i]] }_i is 1-1 with { (prev[i], keys[i]) }_i.
+ *
+ * Runtime: O(n (log n)^2), space usage O(n) */
+#[inline(never)]
+fn construct_xor_table_entry(prev: &[u128], keys: &[u64], r_bits: u32) -> Vec<u128> {
+    let n_bits = next_log_power_of_two(keys.len());
+    assert!(prev.len() == keys.len());
+    assert!(r_bits >= n_bits);
+
+    /* First: group rows by identical keys */
+    let mut key_freq_offset = vec![0_u64; 1 << r_bits];
+    for k in keys {
+        key_freq_offset[*k as usize] += 1;
+    }
+    let mut offset = 0;
+    for ko in key_freq_offset.iter_mut() {
+        offset += *ko;
+        *ko = offset;
+    }
+    let mut index_table = vec![0_u64; keys.len()];
+    for (i, k) in keys.iter().enumerate() {
+        key_freq_offset[*k as usize] -= 1;
+        let o = key_freq_offset[*k as usize];
+        index_table[o as usize] = i as u64;
+    }
+
+    /* Note: it _may_ be possible to reduce random reads/writes by, instead of just
+     * storing 'u64' row ids, storing their associated prev & output values, like
+     * Vec<(u64,u128,u128)>, and writing back the output values at the very end.  */
+    let mut groups: Vec<Vec<Vec<u64>>> = Vec::new();
+    for _ in 0..64 {
+        groups.push(Vec::new());
+    }
+    for i in 0..(1 << r_bits) {
+        let s = key_freq_offset[i];
+        let e = key_freq_offset
+            .get(i + 1)
+            .copied()
+            .unwrap_or(keys.len() as u64);
+        if e <= s {
+            continue;
+        }
+        let group = Vec::from(&index_table[s as usize..e as usize]);
+        groups[next_log_power_of_two(group.len()) as usize].push(group);
+    }
+    drop(key_freq_offset);
+    drop(index_table);
+
+    // outputs_by_rows ; want outputs_by_values....
+    let mut outputs_by_row = vec![0_u128; keys.len()];
+    for sz in 0..groups.len() - 1 {
+        let [class, next] = &mut groups[sz..sz + 2] else {
+            break;
+        };
+
+        while class.len() >= 2 {
+            let g1: Vec<u64> = class.pop().unwrap();
+            let g2: Vec<u64> = class.pop().unwrap();
+
+            /* Merge two groups of rows, uniformly modifying all output values
+             * for one of the two groups to ensure there are no collisions. */
+            let mut vals_1 = vec![0u128; g1.len()];
+            let mut vals_2 = vec![0u128; g2.len()];
+            for (v, i) in vals_1.iter_mut().zip(g1.iter()) {
+                *v = prev[*i as usize] ^ outputs_by_row[*i as usize];
+            }
+            for (v, i) in vals_2.iter_mut().zip(g2.iter()) {
+                *v = prev[*i as usize] ^ outputs_by_row[*i as usize];
+            }
+            let x = xor_distinguish(&vals_1, &vals_2, r_bits * 2);
+            for i in g1.iter() {
+                outputs_by_row[*i as usize] ^= x;
+            }
+            next.push([g1, g2].concat());
+        }
+        if let Some(g) = class.pop() {
+            next.push(g);
+        }
+        assert!(class.is_empty());
+    }
+
+    assert!(groups.iter().map(|x| x.len()).sum::<usize>() == 1);
+    drop(groups);
+
+    let mut outputs_by_key = vec![0_u128; 1 << r_bits];
+    for (i, k) in keys.iter().enumerate() {
+        if outputs_by_key[*k as usize] != 0 {
+            assert!(outputs_by_key[*k as usize] == outputs_by_row[i]);
+        }
+        outputs_by_key[*k as usize] = outputs_by_row[i];
+    }
+    outputs_by_key
+}
+
+#[test]
+fn test_xor_table_entry() {
+    fn test_pattern(base: Vec<u128>, keys: Vec<u64>, r_bits: u32) {
+        for v in base.iter() {
+            assert!(v >> (2 * r_bits) == 0);
+        }
+        for v in keys.iter() {
+            assert!(v >> (r_bits) == 0);
+        }
+
+        let table = construct_xor_table_entry(&base, &keys, r_bits);
+        let inputs = BTreeSet::from_iter(base.iter().zip(keys.iter()));
+        let outputs = BTreeSet::from_iter(
+            base.iter()
+                .zip(keys.iter())
+                .map(|(x, y)| x ^ table[*y as usize]),
+        );
+        println!(
+            "unique input pairs {}, unique xor'd outputs {}",
+            inputs.len(),
+            outputs.len()
+        );
+        assert!(inputs.len() == outputs.len());
+    }
+
+    test_pattern(
+        (0..(u16::MAX as u128)).map(|x| x * x).collect(),
+        (0..(u16::MAX as u64)).map(|x| x / 3).collect(),
+        16,
+    );
+    test_pattern(
+        (0..(u16::MAX as u128)).map(|x| (x / 3) * (x / 3)).collect(),
+        (0..(u16::MAX as u64)).map(|x| x).collect(),
+        16,
+    );
+    test_pattern(
+        (0..(u16::MAX as u128))
+            .map(|x| (x & 0xff00) * 0x10001)
+            .collect(),
+        (0..(u16::MAX as u64)).map(|x| x & 0x00ff).collect(),
+        16,
+    );
+    test_pattern(
+        (0..(u16::MAX as u128)).map(|x| (x / 6) * 0x12345).collect(),
+        (0..(u16::MAX as u64)).map(|x| x / 15).collect(),
+        16,
+    );
+}
+
+impl Dict<u64, u64> for XorReducedDict {
+    fn new(data: &[(u64, u64)]) -> Self {
+        let n_bits = next_log_power_of_two(data.len());
+        let r_bits = n_bits + 1;
+
+        let mut xor_table = Vec::new();
+        let mask_kp01 = if 2 * r_bits < u64::BITS {
+            (1 << (2 * r_bits)) - 1
+        } else {
+            u64::MAX
+        };
+        let mut comp_keys: Vec<u128> = data.iter().map(|x| (x.0 & mask_kp01) as u128).collect();
+
+        for i in 2..u64::BITS.div_ceil(r_bits) {
+            let next: Vec<u64> = data
+                .iter()
+                .map(|kv| (kv.0 >> (r_bits * i)) & ((1 << r_bits) - 1))
+                .collect();
+            let table = construct_xor_table_entry(&comp_keys, &next, r_bits);
+            for (c, kv) in comp_keys.iter_mut().zip(data.iter()) {
+                let kp = (kv.0 >> (r_bits * i)) & ((1 << r_bits) - 1);
+                *c = *c ^ table[kp as usize];
+            }
+            xor_table.push(table);
+        }
+
+        if false {
+            assert!(BTreeSet::<u128>::from_iter(comp_keys.iter().map(|x| *x)).len() == data.len());
+        }
+
+        let pairs: Vec<(u64, u64)> = comp_keys
+            .iter()
+            .map(|x| (((*x) & ((1 << r_bits) - 1)) as u64, (*x >> r_bits) as u64))
+            .collect();
+
+        let quad = HMPQuadHash::new(&pairs, r_bits);
+        let keys: Vec<u64> = pairs.iter().map(|x| quad.query(x.0, x.1)).collect();
+
+        // TODO: extract this table setup into a common function (or: create a PerfectHash
+        // trait from which dictionaries can be generically derived)
+
+        // Identify a value which is _not_ a valid key.
+        let mut is_key: Vec<bool> = vec![false; data.len()];
+        for kv in data.iter() {
+            if kv.0 < data.len() as u64 {
+                is_key[kv.0 as usize] = true;
+            }
+        }
+        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
+        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << r_bits];
+        for (k, p) in keys.iter().zip(data.iter()) {
+            assert!(table[*k as usize].0 == non_key);
+            table[*k as usize] = *p;
+        }
+
+        XorReducedDict {
+            xor_table,
+            quad,
+            r_bits,
+            table,
+            non_key,
+        }
+    }
+    fn query(&self, key: u64) -> Option<u64> {
+        let mut x = 0;
+
+        let rmask = (1 << self.r_bits) - 1;
+
+        let kp0 = (key & rmask) as u128;
+        let kp1 = (((key >> self.r_bits) & rmask) as u128) << self.r_bits;
+        x ^= kp0;
+        x ^= kp1;
+
+        // Specializing by the table length, would probably help significantly
+        for (i, t) in self.xor_table.iter().enumerate() {
+            let kp = (key >> (self.r_bits * (i + 2) as u32)) & rmask;
+            x ^= t[kp as usize];
+        }
+
+        let idx = self.quad.query(
+            (x & ((1 << self.r_bits) - 1)) as u64,
+            (x >> self.r_bits) as u64,
+        );
+        let entry = self.table[idx as usize];
+        if entry.0 != key || key == self.non_key {
+            None
+        } else {
+            Some(entry.1)
+        }
+    }
+}
+
+#[test]
+fn test_xor_reduced_dict() {
+    let x: Vec<(u64, u64)> = (0..(u8::MAX as u64)).map(|x| (x.pow(8), x)).collect();
+    let hash = XorReducedDict::new(&x);
+    for (k, v) in x {
+        assert!(
+            Some(v) == hash.query(k),
+            "{:?} {:?} {:?}",
+            k,
+            v,
+            hash.query(k)
+        );
+    }
+    let x: Vec<(u64, u64)> = (0..(1u64 << 10)).map(|x| (x.pow(6), x)).collect();
+    let hash = XorReducedDict::new(&x);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }

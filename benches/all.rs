@@ -115,6 +115,9 @@ fn criterion_benchmark(c: &mut Criterion) {
             if bits <= 22 {
                 bench_group::<R09BxHMP01Dict>(bits, &mut group, "r09bxhmp01", pattern, *patfn);
             }
+            if bits <= 22 {
+                bench_group::<XorReducedDict>(bits, &mut group, "xor+hmp01", pattern, *patfn);
+            }
         }
     }
     group.finish();
