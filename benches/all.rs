@@ -118,6 +118,13 @@ fn criterion_benchmark(c: &mut Criterion) {
             if bits <= 22 {
                 bench_group::<XorReducedDict>(bits, &mut group, "xor+hmp01", pattern, *patfn);
             }
+            if bits <= 22 {
+                bench_group::<Ruzic09Dict>(bits, &mut group, "r09a", pattern, *patfn);
+            }
+            if bits <= 12 {
+                /* This construction has _quadratic_ output size and is only suitable for small inputs */
+                bench_group::<Raman96Dict>(bits, &mut group, "raman96", pattern, *patfn);
+            }
         }
     }
     group.finish();

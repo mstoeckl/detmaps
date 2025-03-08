@@ -4,28 +4,6 @@
 use detmaps::*;
 use std::time::Instant;
 
-/** Generate n pseudo-random samples in 0..=u32::MAX _without_ repetition. */
-fn make_random_sampled_32(n: u64, seed: u64) -> Vec<(u64, u64)> {
-    assert!(n.is_power_of_two());
-    let p = (seed.wrapping_mul(0x9e3779b97f4a7c16)) | 0x1;
-    /* Now n and p are coprime, so (x*p)%n is a permutation. */
-    (0..n)
-        .map(|x| (((x as u128 * p as u128) % (1u128 << 32)) as u64, x))
-        .collect()
-}
-
-/** Generate n pseudo-random samples from the first n entries of `make_random_sampled_32`, _without_ repetition. */
-fn make_random_order_32(n: u64, seed_vals: u64, seed_order: u64) -> Vec<u64> {
-    let vals = make_random_sampled_32(n, seed_vals);
-
-    assert!(n.is_power_of_two());
-    let p = (seed_order.wrapping_mul(0x9e3779b97f4a7c16)) | 0x1;
-    /* Now n and p are coprime, so (x*p)%n is a permutation. */
-    (0..n)
-        .map(|x| vals[((x as u128 * p as u128) % (n as u128)) as usize].0)
-        .collect()
-}
-
 #[inline(never)]
 fn do_virt_queries(dict: &GenericDict, queries: &[u64]) {
     let mut x = 0;
@@ -43,6 +21,7 @@ enum GenericDict {
     HMP01u(HMP01UnreducedDict),
     R09BxHMP01(R09BxHMP01Dict),
     XorxHMP01(XorReducedDict),
+    R09a(Ruzic09Dict),
 }
 impl GenericDict {
     fn new_typed(data: &[(u64, u64)], tp: &str) -> Self {
@@ -54,6 +33,7 @@ impl GenericDict {
             "hmp01u" => Self::HMP01u(HMP01UnreducedDict::new(data)),
             "r09b+hmp01" => Self::R09BxHMP01(R09BxHMP01Dict::new(data)),
             "xor+hmp01" => Self::XorxHMP01(XorReducedDict::new(data)),
+            "r09a" => Self::R09a(Ruzic09Dict::new(data)),
             _ => panic!("Unknown dict type: {}", tp),
         }
     }
@@ -73,6 +53,7 @@ impl Dict<u64, u64> for GenericDict {
             Self::HMP01u(ref v) => v.query(key),
             Self::R09BxHMP01(ref v) => v.query(key),
             Self::XorxHMP01(ref v) => v.query(key),
+            Self::R09a(ref v) => v.query(key),
         }
     }
 }
@@ -91,7 +72,7 @@ fn main() {
         "rand64" => util::make_random_chain_64(sz, 0x1, 0x1111),
         _ => unimplemented!(),
     };
-    let queries = std::hint::black_box(make_random_order_32(sz, 1, 1111));
+    let queries: Vec<u64> = std::hint::black_box(data.iter().map(|x| x.0).collect());
     let t0 = Instant::now();
 
     let dict = std::hint::black_box(GenericDict::new_typed(&data, dict_type));
