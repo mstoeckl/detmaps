@@ -856,8 +856,7 @@ fn test_hmp01_unreduced() {
 /* ---------------------------------------------------------------------------- */
 
 struct Ruzic09BReduction {
-    // Multipliers; with each mask-multiply-shift-add step, domain size is reduced by half,
-    // from 64 to 32 to 16 bits.
+    /* Multipliers; with each mask-multiply-shift-add step, domain size is reduced by half, approximately, from 64 to 32+O(log n) to 16+O(log n) bits. */
     steps: Vec<(u64, u32)>,
     // Number of bits of the final output
     end_bits: u32,
@@ -918,12 +917,22 @@ impl Ruzic09BReduction {
         let mut mults = Vec::new();
         while u_bits > max_mult_bits + n_bits {
             let s = (u_bits - max_mult_bits) / 2;
+            let next_ubits = (u_bits - s).max(s + max_mult_bits) + 1;
+            if next_ubits == u_bits {
+                /* at small n, `u_bits + max_mult_bits + n_bits` might always be true. */
+                break;
+            }
+
             // println!("n {} u {} s {}", n_bits, u_bits, s);
             let a = find_good_multiplier_fast(&keys, s, max_mult_bits);
             mults.push((a, s));
+
             for k in keys.iter_mut() {
                 *k = (*k >> s) + a * (*k & ((1 << s) - 1));
             }
+
+            u_bits = next_ubits;
+
             if false {
                 // Verify multiplier actually works
                 let mut b = BTreeSet::new();
@@ -931,8 +940,11 @@ impl Ruzic09BReduction {
                     assert!(b.insert(k), "duplicate value: {}", k);
                 }
             }
-
-            u_bits = s + max_mult_bits;
+            if false {
+                for k in keys.iter() {
+                    assert!(k >> u_bits == 0);
+                }
+            }
         }
 
         Ruzic09BReduction {
@@ -942,8 +954,6 @@ impl Ruzic09BReduction {
     }
     #[allow(dead_code)]
     fn new_precise(_kvs: &[(u64, u64)]) -> Ruzic09BReduction {
-        // Why isn't O(n^2) possible?
-
         /* There have been improvements to the problem of counting the number of permutation inversions;
          * since Ružić09 was written. See e.g. Chan & Pǎtraşcu 2010,
          * "Counting Inversions, Offline Orthogonal Range Coutning, and Related Problems" */
@@ -964,7 +974,7 @@ pub struct R09BxHMP01Dict {
     r_bits: u32,
     // TODO: use a binary tree merge instead of a sequence of hashes
     hashes: Vec<HMPQuadHash>,
-    /** Table of key-value pairs indexed by the perfect hash construction */
+    /** Table of key-value capairs indexed by the perfect hash construction */
     table: Vec<(u64, u64)>,
     /** A value which is not a valid key */
     non_key: u64,
@@ -1082,8 +1092,8 @@ fn test_r09xhmp01_dict() {
 
 /* ---------------------------------------------------------------------------- */
 
-/** Deterministic variant of tabulation hashing from [N]^k to [N^2], followed
- * by double displacement hashing for the last [N^2] -> [N] step.
+/** Deterministic variant of tabulation hashing from `[N]^k to [N^2]`, followed
+ * by double displacement hashing for the last `[N^2] -> [N]` step.
  *
  * This is rather memory intensive and the most efficient form of [Ruzic09BReduction]
  * likely uses much less memory and is faster; but it should query fewer cache lines
@@ -1540,17 +1550,32 @@ struct Ruzic09AHash {
     output_bits: u32,
     displacement: Vec<u64>,
 
-    // bucket implementation? In practice, a linear scan may be fast enough
-    // with 8 buckets per cache line. Brute force hash searching may be practical
-    // given the small sizes. Ruzic09A suggests fusion trees or packed
-    // B-trees of constant depth (but that may be for universe reduction)
-    bucket_hashes: Vec<Option<Vec<(u128, u64)>>>, // current impl: linear scan
-    // TODO: can afford 'O(bucket_size)^2 runtime. Also: use the O(t^2 log u / log t)
-    // time algorithm for an 'inner product' hash mod p (which improves slightly on Raman96)
+    /* There are several possible bucket implementations; Ružić09A suggests Raman95Dict
+     * or the general O(n^2 log n)-time construction of Ružić08b.
+     * In practice on _pseudo random_ inputs, bucket sizes are small and a linear
+     * scan over a a list of elements be fast, but this would not provide any
+     * strong worst-case query guarantees.
+     *
+     * Note: in practice, bucket construction takes about half the time of
+     * `Ruzic09AHash`, so even slight improvements on `Raman95Dict` (like the
+     * 'ax mod p' approach, if implemented divisionless using multiplications
+     * and shifts) would be worth it.
+     */
+    bucket_hashes: Vec<Option<Raman95Dict>>,
 
     /* Fallback hash structure operates on O(n / log n) elements, so
      * slower construction is OK. Could alternatively use a variant of
-     * Ruzic09A. */
+     * Ruzic09A.
+     *
+     * A possible alternative to the fallback hash structure would be to apply
+     * a construction like HMP01 _to the specific large buckets_, avoiding
+     * the quadratic space costs of directly using Raman95Dict, and possibly
+     * saving construction time. (This may increase the worst-case memory-load
+     * chain length by one, since with the current design one can speculatively
+     * query the fallback hash; but because the [n^2/polylog n] input size is below
+     * the easy [n^2] non-collision threshold, the Ruzic09A construction does
+     * not minimize latency anyway.
+     */
     fallback_hash: HMPQuadHash,
 }
 
@@ -2039,13 +2064,14 @@ fn get_r09a_hash_bits(n_bits: u32) -> (u32, u32, u32, u32, u32, u32) {
      * having input-dependent parameters */
     let f_bits = next_log_power_of_two(large_limit);
     let r_bits = u_bits.div_ceil(2).max(f_bits + 1);
-    let output_bits = psi_bits.max(r_bits) + 1;
+    let output_bits = psi_bits.max(r_bits);
     (u_bits, output_bits, psi_bits, phi_bits, f_bits, r_bits)
 }
 
 impl Ruzic09AHash {
     fn new(keys: &[u128], n_bits: u32) -> Self {
         let (u_bits, output_bits, psi_bits, phi_bits, f_bits, r_bits) = get_r09a_hash_bits(n_bits);
+        assert!(u_bits <= u64::BITS); // TODO: reduce key space to u64, and/or parameterize it
         assert!(next_log_power_of_two(keys.len()) <= n_bits);
         for k in keys.iter() {
             assert!(k >> u_bits == 0);
@@ -2073,31 +2099,66 @@ impl Ruzic09AHash {
             select_bits_slow(&mut displacement, &keys, phi_bits, psi_bits, pl, ph)
         }
 
-        let mut bucket_hashes: Vec<Option<Vec<(u128, u64)>>> = Vec::new();
-        bucket_hashes.resize_with(1 << psi_bits, || Some(Vec::new()));
+        let mut bucket_lists: Vec<Option<Vec<u64>>> = Vec::new();
+        bucket_lists.resize_with(1 << psi_bits, || Some(Vec::new()));
 
         let max_bucket_size = (phi_bits * phi_bits * phi_bits * psi_bits) as usize;
 
-        let mut fallback_list: Vec<u128> = Vec::new();
-        for (i, k) in keys.iter().enumerate() {
+        /* Compute buckets and construct the fallback key list */
+        let mut fallback_list: Vec<u64> = Vec::new();
+        for k in keys.iter() {
             let upper = k >> psi_bits;
             let lower = (k & ((1 << psi_bits) - 1)) as u64;
             let h = lower ^ displacement[upper as usize];
 
-            let bucket = &mut bucket_hashes[h as usize];
+            let bucket = &mut bucket_lists[h as usize];
 
             if let Some(ref mut b) = bucket {
-                b.push((*k, i as u64));
+                b.push((*k).try_into().unwrap());
 
                 if b.len() > max_bucket_size {
-                    for (k, _j) in b.drain(..) {
+                    for k in b.drain(..) {
                         fallback_list.push(k);
                     }
                     *bucket = None;
                 }
             } else {
-                fallback_list.push(*k);
+                fallback_list.push((*k).try_into().unwrap());
             }
+        }
+        /* Construct a hash function for `fallback_list` and record which values
+         * it takes */
+        let split_fallback: Vec<(u64, u64)> = fallback_list
+            .iter()
+            .map(|x| (((*x >> r_bits) as u64, (x & ((1 << r_bits) - 1)) as u64)))
+            .collect();
+        let fallback_hash = HMPQuadHash::new(&split_fallback, r_bits);
+
+        let mut taken_spots = vec![false; 1 << output_bits];
+        let mut free_i = 0;
+        for k in split_fallback.iter() {
+            taken_spots[fallback_hash.query(k.0, k.1) as usize] = true;
+        }
+
+        /* Construct bucket hash functions and select unique fallback values
+         * which are not used by the fallback hash */
+        let mut bucket_hashes: Vec<Option<Raman95Dict>> = Vec::new();
+        for bucket in bucket_lists {
+            let Some(b) = bucket else {
+                bucket_hashes.push(None);
+                continue;
+            };
+
+            let mut b2: Vec<(u64, u64)> = Vec::new();
+            for k in b.iter() {
+                while taken_spots[free_i] {
+                    free_i += 1;
+                }
+                taken_spots[free_i] = true;
+
+                b2.push((*k, free_i as u64));
+            }
+            bucket_hashes.push(Some(Raman95Dict::new(&b2)));
         }
 
         // println!(
@@ -2120,13 +2181,6 @@ impl Ruzic09AHash {
             max_bucket_size
         );
 
-        let split_fallback: Vec<(u64, u64)> = fallback_list
-            .iter()
-            .map(|x| (((*x >> r_bits) as u64, (x & ((1 << r_bits) - 1)) as u64)))
-            .collect();
-
-        let fallback_hash = HMPQuadHash::new(&split_fallback, r_bits);
-
         Ruzic09AHash {
             phi_bits,
             psi_bits,
@@ -2143,20 +2197,17 @@ impl Ruzic09AHash {
 
         let bucket = &self.bucket_hashes[h as usize];
         if let Some(ref v) = bucket.as_ref() {
-            // temporary solution: linear scan, replace with b^2 sized lookup table + a simple hash?
-            for entry in v.iter() {
-                if entry.0 == k {
-                    return entry.1 << 1;
-                }
-            }
-            // no match, value does not matter
-            0
+            // TODO: using (h, upper) and the displacement table, one can
+            // derive the original key, since `lower = h XOR disp[upper]`.
+            // Therefore: it suffices for this inner hash function to query
+            // _just_ using the (much fewer) upper bits
+            v.query(k.try_into().unwrap()).unwrap_or(0)
+            // If no match, the value does not matter
         } else {
             let fhi = (k >> self.fallback_hash.r_bits) as u64;
             let flo = (k & ((1 << self.fallback_hash.r_bits) - 1)) as u64;
             let v = self.fallback_hash.query(fhi, flo);
-            // alternatively, could use a second table and hash into gaps left by the main construction
-            (v << 1) | 1
+            v
         }
     }
 }
@@ -2278,6 +2329,7 @@ impl Dict<u64, u64> for Ruzic09Dict {
                 is_key[*k as usize] = true;
             }
         }
+
         let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
         // Fill table entries
         let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << output_bits];
@@ -2331,195 +2383,175 @@ fn test_ruzic09_dict() {
 
 /** The Raman96 hash construction; construction time is roughly quadratic in the
  * input set size */
-pub struct Raman96Hash {
+pub struct Raman95Hash {
     u_bits: u32,
     output_bits: u32,
     a: u64,
 }
 
-impl PerfectHash<u64, u64> for Raman96Hash {
-    fn new(keys: &[u64]) -> Self {
-        let output_bits = next_log_power_of_two(keys.len()).max(1) * 2; // n^2 space, is > n(n-1)/2
-        assert!(output_bits < u64::BITS);
+fn compute_raman95_multiplier(keys: &[u64], u_bits: u32) -> (u64, u32) {
+    let output_bits = next_log_power_of_two(keys.len()).max(1) * 2; // n^2 space, is > n(n-1)/2
+    assert!(output_bits < u64::BITS);
 
-        /** The number of extensions `a` of α for which
-         * `a(x-y) mod (2^u) is in [-2^{u-o}+1,...2^{u-o}-1]`
-         *
-         * Note: Raman95/96 uses a different convention, in which
-         * the multiplier is '2 α + 1' (i.e, α excludes the first bit.)
-         * This adds a lot of +1/-1 terms to expressions, so we stay
-         * with `α` being having least significant bit 1.
-         */
-        fn compute_delta(
-            x: u64,
-            y: u64,
-            alpha: u64,
-            alpha_bits: u32,
-            u_bits: u32,
-            output_bits: u32,
-        ) -> u64 {
-            // Q: what if we _slightly_ overestimate and make l..=u have inclusive length 2<<(u-o) instead of 2<<(u-o-1) ? This would make the 'count' estimate easier to find, but
-            // could up-to-double collision estimates; would probably be safe -- just a slightly
-            // more pessimistic estimator, by at most a factor of 2, which could be corrected for
-            // by increasing the number of output bits
-            assert!(alpha % 2 == 1);
+    assert!(u_bits == u64::BITS);
 
-            // TODO: handle sub-u64 wrapping (would save time if this hash construction is ever used with fewer input bits)
-            assert!(x != y && u_bits == 64);
+    /** The number of extensions `a` of α for which
+     * `a(x-y) mod (2^u) is in [-2^{u-o}+1,...2^{u-o}-1]`
+     *
+     * Note: Raman95/96 uses a different convention, in which
+     * the multiplier is '2 α + 1' (i.e, α excludes the first bit.)
+     * This adds a lot of +1/-1 terms to expressions, so we stay
+     * with `α` being having least significant bit 1.
+     */
+    fn compute_delta(
+        x: u64,
+        y: u64,
+        alpha: u64,
+        alpha_bits: u32,
+        u_bits: u32,
+        output_bits: u32,
+    ) -> u64 {
+        assert!(alpha % 2 == 1);
 
-            let diff = x.wrapping_sub(y);
-            let f = alpha.wrapping_mul(diff);
+        // TODO: handle sub-u64 wrapping (would save time if this hash construction is ever used with fewer input bits)
+        assert!(x != y && u_bits == 64);
 
-            let ep = (1u64 << (u_bits - output_bits)) - 1;
+        let diff = x.wrapping_sub(y);
+        let f = alpha.wrapping_mul(diff);
 
-            let l: u64 = 0u64.wrapping_sub(ep).wrapping_sub(f);
-            let u: u64 = ep.wrapping_sub(f);
-            let i = diff.trailing_zeros();
+        let ep = (1u64 << (u_bits - output_bits)) - 1;
 
-            if alpha_bits + i >= u_bits {
-                /* Case: a'(x-y) is _always_ 0, so test if 0 is inside the interval l..=u
-                 *
-                 * (Should be simple to handle as a batch: sort and two-pointer-scan the αx
-                 * sequence.)
-                 */
-                // println!("path: fast exit: {}, alpha_bits={}", l > u, alpha_bits);
-                if l > u {
-                    // except: case 'large'?
-                    return 1 << (u_bits - alpha_bits);
-                }
-                return 0;
+        let l: u64 = 0u64.wrapping_sub(ep).wrapping_sub(f);
+        let u: u64 = ep.wrapping_sub(f);
+        let i = diff.trailing_zeros();
+
+        if alpha_bits + i >= u_bits {
+            /* Case: a'(x-y) is _always_ 0, so test if 0 is inside the interval l..=u
+             *
+             * (Should be simple to handle as a batch: sort and two-pointer-scan the αx
+             * sequence.)
+             */
+            // println!("path: fast exit: {}, alpha_bits={}", l > u, alpha_bits);
+            if l > u {
+                // except: case 'large'?
+                return 1 << (u_bits - alpha_bits);
             }
-
-            /* Raman95, "Improved data structures for predecessor queries in integer sets" has
-             * a typo: "simply reduces to counting the number integral multiples of X" has
-             * X be 2^{b-|alpha|-i-1} in the paper, but X should be 2^{|alpha|+i+1} instead.
-             * (Note: this implementation uses a slightly different alpha definition than Raman95/96) */
-            let mult_bits = alpha_bits + i;
-            let nmults = 1u64 << (u_bits - mult_bits);
-
-            let nmultm1_lt_l = l.wrapping_sub(1) >> mult_bits;
-            let nmultm1_lt_up1 = u >> mult_bits;
-
-            /* Multiples of 2^{mult_bits} in l..=u */
-            let mults_in_range = nmultm1_lt_up1.wrapping_sub(nmultm1_lt_l) % nmults;
-
-            if mult_bits < u_bits - output_bits + 1 {
-                /* Simple regime: multiples smaller than interval length */
-                let est_count = 1 << (u_bits - output_bits + 1 - mult_bits);
-                assert!(
-                    est_count >= mults_in_range && mults_in_range + 1 >= est_count,
-                    "{} {}",
-                    est_count,
-                    mults_in_range
-                );
-            } else {
-                /* Interesting regime: multiples larger than interval length, so
-                 * the interval will contain either 0 or 1 multiples in range.
-                 *
-                 * The interval, rounded up, is [-2^{u-o},2^{u-o})-b(x-y) for
-                 * b = 2alpha+1, which contains a multiple of 2^{|a|+i+1} if
-                 * b(x-y)=bx-by is 2^{u-o} close to a multiple of 2^{|a|+i+1}.
-                 *
-                 * Also: since b is odd, the number of trailing zeros of b(x-y)
-                 * and of (x-y) is the same. So one can _preprocess_ the input vector
-                 * by premultiplying it with `b`.
-                 *
-                 * Is there any efficient way to count the number of bx-by which
-                 * are 2^{u-o} close to a multiple of 2^{|a|+{ctz(bx-by)}+1}?
-                 *
-                 * Note: for each value of `i`, can split all `bx` into equivalence
-                 * classes by their last `i` bits, using e.g. a binary tree; each
-                 * equivalence class is split in two by the `i+1`st bit so one can
-                 * easily identify the pairs which share the last `i` bits but differ
-                 * at the `i+1`st bit.
-                 *
-                 * Then can iterate over all `by` in order of _increasing_
-                 * `i` value relative to `x`; at each level looking at the `by` that
-                 * are put in the same bucket at `x`.
-                 *
-                 * If `i` satisfies `|a|+i+1 > u - o`, our goal is slightly different.
-                 * We want to determine how many `bx-by` of the `i` class satisfy
-                 * `bx-by`+/-2^{u-o} containing a multiple of 2^{|a|+i+1}. Equivalently,
-                 * how many `bx%2^{|a|+i+1}` - `by%2^{|a|+i+1}` are within +/-[2^{u-o}]
-                 * of each other. (Remember that we can assume |a|+i+1 < u.) So, this is
-                 * reducing the `i` class to its next `|a|` bits, and then doing a
-                 * _range count_ query, which can be implemented (for any set of size `k`)
-                 * using a binary tree whose inner nodes count the power-of-two regions of
-                 * children, with O(k) setup and O(log k) query time.
-                 *
-                 * TODO: all of this is unconfirmed; need to be certain that the base Raman96
-                 * construction actually works, etc, that we _can_  make a slightly more
-                 * pessimistic estimator, and that the proposed design also works.
-                 */
-                assert!(f.trailing_zeros() == diff.trailing_zeros());
-                assert!(mults_in_range <= 1);
-            }
-
-            // println!("path: mults in range: {}, {}..={}, mult bits {}", mults_in_range, l, u, mult_bits);
-            let extensions_in_range = mults_in_range << i;
-            return extensions_in_range;
+            return 0;
         }
 
-        let u_bits = 64;
-        let mut a = 1;
-        let mut last_wt = None;
-        /* With each bit chosen, the sum over all pairs of keys of the "bad extension count"
-         * reduces to at most half the previous value. */
-        // println!("{:?}", keys);
-        for b in 1..u_bits {
-            let mut wt0 = 0;
-            let mut wt1 = 0;
-            let a1 = a | (1 << b);
-            for i in 0..keys.len() {
-                for j in 0..i {
-                    // should have have keys[i]/keys[j] symmetry, for now
-                    let delta0 = compute_delta(keys[i], keys[j], a, b + 1, u_bits, output_bits);
-                    let delta1 = compute_delta(keys[i], keys[j], a1, b + 1, u_bits, output_bits);
-                    if delta0 == 0 {
-                        assert!(
-                            a.wrapping_mul(keys[i]) >> (u_bits - output_bits)
-                                != a.wrapping_mul(keys[j]) >> (u_bits - output_bits),
-                            "{} {} diff {} {} | {} {}",
-                            a.wrapping_mul(keys[i]) >> (u_bits - output_bits),
-                            a.wrapping_mul(keys[j]) >> (u_bits - output_bits),
-                            a.wrapping_mul(keys[i].wrapping_sub(keys[j])) >> (u_bits - output_bits),
-                            a.wrapping_mul(keys[j].wrapping_sub(keys[i])) >> (u_bits - output_bits),
-                            a.wrapping_mul(keys[i].wrapping_sub(keys[j])),
-                            a.wrapping_mul(keys[j].wrapping_sub(keys[i])),
-                        );
-                    }
-                    if delta1 == 0 {
-                        assert!(
-                            a1.wrapping_mul(keys[i]) >> (u_bits - output_bits)
-                                != a1.wrapping_mul(keys[j]) >> (u_bits - output_bits)
-                        );
-                    }
+        /* Raman95, "Improved data structures for predecessor queries in integer sets" has
+         * a typo: "simply reduces to counting the number integral multiples of X" has
+         * X be 2^{b-|alpha|-i-1} in the paper, but X should be 2^{|alpha|+i+1} instead.
+         * (Note: this implementation uses a slightly different alpha definition than Raman95/96) */
+        let mult_bits = alpha_bits + i;
+        let nmults = 1u64 << (u_bits - mult_bits);
 
-                    // also: delta0+delta1 = {delta with old a value}
+        let nmultm1_lt_l = l.wrapping_sub(1) >> mult_bits;
+        let nmultm1_lt_up1 = u >> mult_bits;
+
+        /* Multiples of 2^{mult_bits} in l..=u */
+        let mults_in_range = nmultm1_lt_up1.wrapping_sub(nmultm1_lt_l) % nmults;
+
+        if mult_bits < u_bits - output_bits + 1 {
+            /* Simple regime: multiples smaller than interval length */
+            let est_count = 1 << (u_bits - output_bits + 1 - mult_bits);
+            assert!(
+                est_count >= mults_in_range && mults_in_range + 1 >= est_count,
+                "{} {}",
+                est_count,
+                mults_in_range
+            );
+        } else {
+            /* Interesting regime: multiples larger than interval length, so
+             * the interval will contain either 0 or 1 multiples in range.
+             *
+             * The interval, rounded up, is [-2^{u-o},2^{u-o})-b(x-y) for
+             * b = 2alpha+1, which contains a multiple of 2^{|a|+i+1} if
+             * b(x-y)=bx-by is 2^{u-o} close to a multiple of 2^{|a|+i+1}.
+             *
+             * Also: since b is odd, the number of trailing zeros of b(x-y)
+             * and of (x-y) is the same. So one can _preprocess_ the input vector
+             * by premultiplying it with `b`.
+             *
+             * Is there any efficient way to count the number of bx-by which
+             * are 2^{u-o} close to a multiple of 2^{|a|+{ctz(bx-by)}+1}?
+             */
+            assert!(f.trailing_zeros() == diff.trailing_zeros());
+            assert!(mults_in_range <= 1);
+        }
+
+        // println!("path: mults in range: {}, {}..={}, mult bits {}", mults_in_range, l, u, mult_bits);
+        let extensions_in_range = mults_in_range << i;
+        return extensions_in_range;
+    }
+
+    let mut a = 1;
+    let mut last_wt = None;
+    /* With each bit chosen, the sum over all pairs of keys of the "bad extension count"
+     * reduces to at most half the previous value. */
+    // println!("{:?}", keys);
+    for b in 1..u_bits {
+        let mut wt0 = 0;
+        let mut wt1 = 0;
+        let a1 = a | (1 << b);
+        for i in 0..keys.len() {
+            for j in 0..i {
+                // should have have keys[i]/keys[j] symmetry, for now
+                let delta0 = compute_delta(keys[i], keys[j], a, b + 1, u_bits, output_bits);
+                let delta1 = compute_delta(keys[i], keys[j], a1, b + 1, u_bits, output_bits);
+                if delta0 == 0 {
                     assert!(
-                        delta0 <= (1 << (u_bits - b - 1)) && delta1 <= (1 << (u_bits - b - 1)),
-                        "delta0 {} delta1 {} lim {}",
-                        delta0,
-                        delta1,
-                        1u64 << (u_bits - b - 1)
+                        a.wrapping_mul(keys[i]) >> (u_bits - output_bits)
+                            != a.wrapping_mul(keys[j]) >> (u_bits - output_bits),
+                        "{} {} diff {} {} | {} {}",
+                        a.wrapping_mul(keys[i]) >> (u_bits - output_bits),
+                        a.wrapping_mul(keys[j]) >> (u_bits - output_bits),
+                        a.wrapping_mul(keys[i].wrapping_sub(keys[j])) >> (u_bits - output_bits),
+                        a.wrapping_mul(keys[j].wrapping_sub(keys[i])) >> (u_bits - output_bits),
+                        a.wrapping_mul(keys[i].wrapping_sub(keys[j])),
+                        a.wrapping_mul(keys[j].wrapping_sub(keys[i])),
                     );
-                    wt0 += delta0 as u128;
-                    wt1 += delta1 as u128;
                 }
-            }
-            if let Some(w) = last_wt {
-                assert!(wt0 + wt1 == w, "{} + {} ?= {}", wt0, wt1, w);
-            }
-            if wt1 < wt0 {
-                a = a1;
-                last_wt = Some(wt1);
-            } else {
-                last_wt = Some(wt0);
-            }
-            // println!("a: {:064b}, b {}, wt0 {}, wt1 {}", a, b, wt0, wt1);
-        }
+                if delta1 == 0 {
+                    assert!(
+                        a1.wrapping_mul(keys[i]) >> (u_bits - output_bits)
+                            != a1.wrapping_mul(keys[j]) >> (u_bits - output_bits)
+                    );
+                }
 
-        Raman96Hash {
+                // also: delta0+delta1 = {delta with old a value}
+                assert!(
+                    delta0 <= (1 << (u_bits - b - 1)) && delta1 <= (1 << (u_bits - b - 1)),
+                    "delta0 {} delta1 {} lim {}",
+                    delta0,
+                    delta1,
+                    1u64 << (u_bits - b - 1)
+                );
+                wt0 += delta0 as u128;
+                wt1 += delta1 as u128;
+            }
+        }
+        if let Some(w) = last_wt {
+            assert!(wt0 + wt1 == w, "{} + {} ?= {}", wt0, wt1, w);
+        }
+        if wt1 < wt0 {
+            a = a1;
+            last_wt = Some(wt1);
+        } else {
+            last_wt = Some(wt0);
+        }
+        // println!("a: {:064b}, b {}, wt0 {}, wt1 {}", a, b, wt0, wt1);
+    }
+    (a, output_bits)
+}
+
+impl PerfectHash<u64, u64> for Raman95Hash {
+    fn new(keys: &[u64]) -> Self {
+        let u_bits = u64::BITS;
+
+        let (a, output_bits) = compute_raman95_multiplier(keys, u_bits);
+
+        Raman95Hash {
             u_bits,
             output_bits,
             a,
@@ -2527,13 +2559,6 @@ impl PerfectHash<u64, u64> for Raman96Hash {
     }
     fn query(&self, key: u64) -> u64 {
         /* The last %2^o is only needed if u<64 */
-        // println!(
-        //     "key {} a {} shift {} output {}",
-        //     key,
-        //     self.a,
-        //     (self.u_bits - self.output_bits),
-        //     ((key.wrapping_mul(self.a)) >> (self.u_bits - self.output_bits))
-        // );
         ((key.wrapping_mul(self.a)) >> (self.u_bits - self.output_bits))
             & ((1 << self.output_bits) - 1)
     }
@@ -2542,8 +2567,8 @@ impl PerfectHash<u64, u64> for Raman96Hash {
     }
 }
 
-/** Dictionary constructed from [Raman96Hash] */
-pub type Raman96Dict = HDict<Raman96Hash>;
+/** Dictionary constructed from [Raman95Hash] */
+pub type Raman95Dict = HDict<Raman95Hash>;
 
 #[cfg(test)]
 fn test_perfect_hash<H: PerfectHash<u64, u64>>() {
@@ -2552,11 +2577,13 @@ fn test_perfect_hash<H: PerfectHash<u64, u64>>() {
         sizes.push(2 << j);
         sizes.push(3 << j);
     }
+    sizes.reverse();
     for s in sizes {
         let pow = 64 / next_log_power_of_two(s + 2);
         let keys: Vec<u64> = (0..s as u64).map(|x| x.wrapping_pow(pow)).collect();
         assert!(keys.len() == BTreeSet::from_iter(keys.iter().copied()).len());
         let hash = H::new(&keys);
+        // TODO: an output bit set is only appropriate if the size is O(n); use BTreeSet only once (output_size >= s * 16) (or s*128 if using bitset)
         let mut outputs = vec![false; 1 << hash.output_bits()]; // todo: use bitset
         for k in keys {
             assert!(
@@ -2573,14 +2600,14 @@ fn test_perfect_hash<H: PerfectHash<u64, u64>>() {
 
 #[test]
 fn test_raman96_hash() {
-    test_perfect_hash::<Raman96Hash>();
+    test_perfect_hash::<Raman95Hash>();
 }
 
 #[test]
 fn test_raman96_dict() {
     // TODO: make a generic 'test_perfect_hash<H>' function that checks the hash against a wide range of inputs, including small inputs!
     let x: Vec<(u64, u64)> = (0..(1u64 << 5)).map(|x| (x.wrapping_pow(6), x)).collect();
-    let dict = HDict::<Raman96Hash>::new(&x);
+    let dict = HDict::<Raman95Hash>::new(&x);
     for (k, v) in x {
         assert!(Some(v) == dict.query(k));
     }
@@ -2589,10 +2616,824 @@ fn test_raman96_dict() {
 /** A variant of the Raman96 hash construction with a slightly more memory intensive
  * but possibly slightly faster (but still quadratic time) construction; this may scale
  * better to larger universes, and have a _slightly_ smaller output space, but requires
- * finite field operations. */
+ * finite field operations. May be practical for [u256]->[u16] hashing. */
 struct IterMulHash {
     u_bits: u32,
     step_bits: u32,
     factors: Vec<u64>,
     p: u64,
+}
+
+/** Same as [Raman95Hash], but hopefully with faster construction. */
+// using a separate type
+pub struct RamanHashFast {
+    u_bits: u32,
+    output_bits: u32,
+    a: u64,
+}
+pub type RamanFastDict = HDict<RamanHashFast>;
+
+impl PerfectHash<u64, u64> for RamanHashFast {
+    fn new(keys: &[u64]) -> Self {
+        let u_bits = u64::BITS;
+
+        // 2n^2 space, because the bad extension count may be doubled with the modified criterion
+        let output_bits = 1 + next_log_power_of_two(keys.len()).max(1) * 2;
+        assert!(output_bits < u64::BITS);
+
+        raman_opt_batch_construction(keys, u_bits, output_bits)
+    }
+    fn query(&self, key: u64) -> u64 {
+        /* The last %2^o is only needed if u<64 */
+        ((key.wrapping_mul(self.a)) >> (self.u_bits - self.output_bits))
+            & ((1 << self.output_bits) - 1)
+    }
+    fn output_bits(&self) -> u32 {
+        self.output_bits
+    }
+}
+
+#[cfg(test)]
+struct RamanOptBitClass {
+    /* Common suffix of all keys, of length `i`, where `i` is implicit */
+    common_suffix: u64,
+    /* Keys where bit `i+1` is 0, in arbitrary order */
+    keys_0: Vec<u64>,
+    /* Keys where bit `i+1` is 1, in arbitrary order */
+    keys_1: Vec<u64>,
+}
+
+#[cfg(test)]
+struct RamanOptAux {
+    // Indexed by the common suffix length `i`.
+    // All keys should be unique
+    by_last_bits: Vec<BTreeMap<u64, RamanOptBitClass>>,
+}
+
+/** Build an index of keys by common suffix length. Requires: all keys to be unique. */
+#[cfg(test)]
+fn build_raman_opt_aux(keys: &[u64]) -> RamanOptAux {
+    let mut aux = RamanOptAux {
+        by_last_bits: Vec::new(),
+    };
+    for i in 0..u64::BITS {
+        let mut table: BTreeMap<u64, RamanOptBitClass> = BTreeMap::new();
+        for k in keys.iter() {
+            let suffix = k & ((1 << i) - 1);
+            let zbit = k & (1 << i) == 0;
+            let entry = table.entry(suffix).or_insert(RamanOptBitClass {
+                common_suffix: suffix,
+                keys_0: Vec::new(),
+                keys_1: Vec::new(),
+            });
+            if zbit {
+                entry.keys_0.push(*k);
+            } else {
+                entry.keys_1.push(*k);
+            }
+        }
+        // TODO: minor (practical) optimization: can entirely skip entries for which at least one of keys_0 or
+        // keys_1 is empty because they will have no matches. (May want to skip this to keep behavior closer to
+        // worst case.)
+        aux.by_last_bits.push(table);
+    }
+
+    if true {
+        /* Check that the index works. */
+        for k in keys {
+            let mut n_alt = 0;
+            for i in 0..u64::BITS {
+                let suffix = k & ((1 << i) - 1);
+                let zbit = k & (1 << i) == 0;
+                let entry = &aux.by_last_bits[i as usize][&suffix];
+                assert!(entry.common_suffix == suffix);
+                let alt_list = if zbit { &entry.keys_1 } else { &entry.keys_0 };
+                for alt in alt_list {
+                    assert!(alt.wrapping_sub(*k).trailing_zeros() == i);
+                    n_alt += 1;
+                }
+            }
+            assert!(n_alt == keys.len() - 1);
+        }
+    }
+
+    aux
+}
+
+/** Like compute_delta() of the original Raman95 construction, except only checking for extensions that map
+ * the difference to [0..2^{u-o}). (The other direction will be handled when this is called with ax/ay reversed.) */
+fn compute_delta_mod(ax: u64, ay: u64, alpha_bits: u32, u_bits: u32, output_bits: u32) -> u64 {
+    assert!(ax != ay && u_bits == 64);
+    let diff = ax.wrapping_sub(ay);
+
+    let ep = (1u64 << (u_bits - output_bits)) - 1;
+
+    let l: u64 = 0u64.wrapping_sub(diff);
+    let u: u64 = ep.wrapping_sub(diff);
+    let i = diff.trailing_zeros();
+
+    if alpha_bits + i >= u_bits {
+        if l > u {
+            return 1 << (u_bits - alpha_bits);
+        }
+        return 0;
+    }
+    let mult_bits = alpha_bits + i;
+    let nmults = 1u64 << (u_bits - mult_bits);
+    let nmultm1_lt_l = l.wrapping_sub(1) >> mult_bits;
+    let nmultm1_lt_up1 = u >> mult_bits;
+    let mults_in_range = nmultm1_lt_up1.wrapping_sub(nmultm1_lt_l) % nmults;
+
+    if mult_bits <= u_bits - output_bits {
+        let est_count = 1 << (u_bits - output_bits - mult_bits);
+        assert!(mults_in_range == est_count);
+    } else {
+        assert!(mults_in_range <= 1);
+    }
+    mults_in_range << i
+}
+
+/* Variant of Raman95 using a pessimistic estimator for 'bad extensions'
+ * that may be more amenable to batch optimizations, but with only iteration
+ * order improvements enabled for easier debugging and comparison. */
+#[cfg(test)]
+fn raman_opt_slow_construction(keys: &[u64], u_bits: u32) -> RamanHashFast {
+    assert!(u_bits == u64::BITS);
+    // 2n^2 space, because the bad extension count may be doubled with the modified criterion
+    let output_bits = 1 + next_log_power_of_two(keys.len()).max(1) * 2;
+    assert!(output_bits < u64::BITS);
+
+    let aux = build_raman_opt_aux(keys);
+
+    let mut a = 1;
+    let mut last_wt = None;
+
+    /* Note: for _batch_ operations, may not actually need the full BTreeMap
+     * but here it is needed to quickly find look up keys matching this one */
+    for b in 1..u_bits {
+        let mut wt0 = 0;
+        let mut wt1 = 0;
+        let a1 = a | (1 << b);
+        for k in keys {
+            for i in 0..u64::BITS {
+                let suffix = k & ((1 << i) - 1);
+                let zbit = k & (1 << i) == 0;
+                let entry = &aux.by_last_bits[i as usize][&suffix];
+                let alt_list = if zbit { &entry.keys_1 } else { &entry.keys_0 };
+                for k2 in alt_list {
+                    assert!(k.wrapping_sub(*k2).trailing_zeros() == i);
+                    assert!(
+                        k.wrapping_mul(a)
+                            .wrapping_sub(k2.wrapping_mul(a))
+                            .trailing_zeros()
+                            == i
+                    );
+
+                    // delta(k,alt) is computed now, delta(alt, k) in a different iteration
+                    let delta0 = compute_delta_mod(
+                        k.wrapping_mul(a),
+                        k2.wrapping_mul(a),
+                        b + 1,
+                        u_bits,
+                        output_bits,
+                    );
+                    let delta1 = compute_delta_mod(
+                        k.wrapping_mul(a1),
+                        k2.wrapping_mul(a1),
+                        b + 1,
+                        u_bits,
+                        output_bits,
+                    );
+                    wt0 += delta0 as u128;
+                    wt1 += delta1 as u128;
+                }
+            }
+        }
+        if let Some(w) = last_wt {
+            assert!(wt0 + wt1 == w, "{} + {} ?= {}", wt0, wt1, w);
+        }
+        if wt1 < wt0 {
+            a = a1;
+            last_wt = Some(wt1);
+        } else {
+            last_wt = Some(wt0);
+        }
+        // println!("a: {:064b}, b {}, wt0 {}, wt1 {}", a, b, wt0, wt1);
+    }
+    RamanHashFast {
+        u_bits,
+        output_bits,
+        a,
+    }
+}
+
+#[test]
+fn test_raman_fast_hash() {
+    test_perfect_hash::<RamanHashFast>();
+
+    /* Check that the fast and slow constructions produce _exactly_ the same hash functions */
+    let mut seqs: Vec<Vec<u64>> = Vec::new();
+
+    for s in [500, 1000] {
+        let pow = 64 / next_log_power_of_two(s + 2);
+        let keys: Vec<u64> = (0..s as u64).map(|x| x.wrapping_pow(pow)).collect();
+        assert!(keys.len() == BTreeSet::from_iter(keys.iter().copied()).len());
+        seqs.push(keys);
+    }
+    for t in [300u64, 500u64] {
+        let keys: Vec<u64> = (0..t).chain((1..t).map(|x| x.reverse_bits())).collect();
+        assert!(keys.len() == BTreeSet::from_iter(keys.iter().copied()).len());
+        seqs.push(keys);
+    }
+
+    for keys in seqs {
+        let hash2 = raman_opt_slow_construction(&keys, u64::BITS);
+        let hash1 = raman_opt_batch_construction(&keys, u64::BITS, hash2.output_bits);
+        assert!(hash1.a == hash2.a && hash1.output_bits == hash2.output_bits);
+    }
+}
+
+/** Compute _one_ direction (L - R) of batch delta case where extension differences are spaced more widely
+ *.than the target interval. Note: sorted_l/sorted_r must be sorted ascending by |k| k & mod_mask */
+fn compute_raman_batch_ring_count(
+    sorted_l: &[u64],
+    sorted_r: &[u64],
+    gap: u64,
+    mod_mask: u64,
+) -> u128 {
+    let mut brute_count = 0u128;
+    if false {
+        // TODO: brute force to start with
+        for kl in sorted_l.iter() {
+            for kr in sorted_r.iter() {
+                let diff = kl.wrapping_sub(*kr) & mod_mask;
+                // println!("new test: {} {} -> {}", kl, kr, (diff < gap) as u32);
+                if diff < gap {
+                    brute_count += 1;
+                }
+            }
+        }
+    }
+
+    let mut count = 0u128;
+
+    let all_r_equal = sorted_r.windows(2).all(|x| x[0] == x[1]);
+    if all_r_equal {
+        /* Special case, all values are equal, efficiently computable. (The two-pointer scanning
+         * approach uses when values are not all equal does not work here.) */
+        let kr = *sorted_r.first().unwrap();
+        for kl in sorted_l.iter() {
+            if (kl.wrapping_sub(kr) & mod_mask) < gap {
+                count += sorted_r.len() as u128;
+            }
+        }
+    } else {
+        /* Case: there are at least two distinct values, so a pointer scan works.
+         *
+         * Note: a two pointer scan approach is complicated by wraparound; see
+         * examples showing how the desired region, marked with x, could evolve.
+         *
+         * xx-------xx
+         * ---xxxx----
+         * ----xxxx---
+         * -----xxxx--
+         *
+         * -----xxxxxx
+         * xxxxxxxxxxx
+         * xxxxx------
+         * -----------
+         *
+         * Target pairs are those for which: `(kl.wrapping_sub(*kr) & mod_mask) < gap`.
+         * (So roughly, want to track all `kr` in (kl - gap, kl] mod m ).
+         *
+         * Since sorted_r is increasing, (kl-sorted_r) is _decreasing_; the smallest
+         * value is on the right end, and the largest on the left. When kl increases,
+         * `kl-sorted_r` increases and the region in [0,gap) moves rightwards.
+         *
+         * ---------
+         *      xx
+         *        x
+         * xx      x
+         *   xx
+         *     x
+         * ---------
+         *
+         * Right index: rightmost and "smallest" value of `kl-kr`.
+         * (i.e, boundary where kl - kr >= 0.)
+         *
+         * Left index: leftmost and "largest" value of `kl - kr - gap`.
+         * (i.e, boundary where kl - kr < gap, a.k.a. `kl - kr - gap < 0`)
+         *
+         * When: left = right+1, there are no valid `kr` values matching `kl`.
+         */
+        let first_kl = *sorted_l.first().unwrap();
+
+        fn get_right_pos(kl: u64, sorted_r: &[u64], mod_mask: u64) -> usize {
+            let mut right = 0;
+            let mut min_diff = mod_mask; /* any value >= mod_mask is OK for initial value */
+            for i in 0..sorted_r.len() {
+                if sorted_r[i] == sorted_r[(i + 1) % sorted_r.len()] {
+                    /* Not a candidate for a rightmost extremum in a circularly sorted list */
+                    continue;
+                }
+                let d = kl.wrapping_sub(sorted_r[i]) & mod_mask;
+                if d <= min_diff {
+                    right = i;
+                    min_diff = d;
+                }
+            }
+            right
+        }
+
+        fn get_left_pos(kl: u64, sorted_r: &[u64], gap: u64, mod_mask: u64) -> usize {
+            let mut left = 0;
+            let mut max_gap_diff = 0;
+            for i in 0..sorted_r.len() {
+                if sorted_r[i] == sorted_r[(i + sorted_r.len() - 1) % sorted_r.len()] {
+                    /* Not a candidate for a leftmost extremum in a circularly sorted list */
+                    continue;
+                }
+                let d = kl.wrapping_sub(sorted_r[i]).wrapping_sub(gap) & mod_mask;
+                if d >= max_gap_diff {
+                    left = i;
+                    max_gap_diff = d;
+                }
+            }
+            left
+        }
+
+        let mut left = get_left_pos(first_kl, &sorted_r, gap, mod_mask);
+        let mut right = get_right_pos(first_kl, &sorted_r, mod_mask);
+
+        /* Note: on the first iteration, right and left pointers should not move */
+        for kl in sorted_l.iter() {
+            /* Update pointer positions for new (nondecreased) kl. For the right pointer,
+             * as it minimizes, it is enough to move it right as long as that reduces the value */
+            while (kl.wrapping_sub(sorted_r[(right + 1) % sorted_r.len()]) & mod_mask)
+                <= (kl.wrapping_sub(sorted_r[right]) & mod_mask)
+            {
+                // println!("advance right");
+                right = (right + 1) % sorted_r.len();
+                // r_unwrapped += 1;
+            }
+            /* The left pointer maximizes a quantity, so the naive way to find that would be to iterate
+             * in order of increasing values (leftwards), which is inefficient. Instead, move right _to
+             * the next distinct value_ while the position to the left has a strictly larger quantity. */
+            while (kl
+                .wrapping_sub(sorted_r[(left + sorted_r.len() - 1) % sorted_r.len()])
+                .wrapping_sub(gap)
+                & mod_mask)
+                > (kl.wrapping_sub(sorted_r[left]).wrapping_sub(gap) & mod_mask)
+            {
+                // println!(
+                //     "advance left: {} {}",
+                //     (kl.wrapping_sub(
+                //         sorted_r[(left + sorted_r.len() - 1) % sorted_r.len()]
+                //     )
+                //     .wrapping_sub(gap)
+                //         & mod_mask),
+                //     (kl.wrapping_sub(sorted_r[left]).wrapping_sub(gap) & mod_mask)
+                // );
+
+                let cval = sorted_r[left];
+                while sorted_r[left] == cval {
+                    left = (left + 1) % sorted_r.len();
+                    // l_unwrapped += 1;
+                }
+            }
+
+            if false {
+                let diffs: Vec<f64> = sorted_r
+                    .iter()
+                    .map(|r| (kl.wrapping_sub(*r) & mod_mask) as f64 / (gap as f64))
+                    .collect();
+                let vals: Vec<bool> = diffs.iter().map(|d| *d < 1.0).collect();
+                assert!(
+                    left == get_left_pos(*kl, &sorted_r, gap, mod_mask),
+                    "left {}, ideal {}, diffs {:?}, vals {:?}",
+                    left,
+                    get_left_pos(*kl, &sorted_r, gap, mod_mask),
+                    diffs,
+                    vals
+                );
+                assert!(
+                    right == get_right_pos(*kl, &sorted_r, mod_mask),
+                    "right {}, ideal {}, diffs {:?}, vals {:?}",
+                    right,
+                    get_right_pos(*kl, &sorted_r, mod_mask),
+                    diffs,
+                    vals
+                );
+            }
+
+            /* local count is: (right - left + 1), which _may_ equal zero (with no matches) or count (with all matches) */
+            let mut local_count = (sorted_r.len() + right + 1 - left) % sorted_r.len();
+            if local_count == 0 {
+                if (kl.wrapping_sub(sorted_r[right]) & mod_mask) < gap {
+                    // println!("pseudoempty");
+                    local_count += sorted_r.len();
+                }
+            }
+
+            // println!("kl={}, scan: l={} r={}, idl={} local_count = {}, diffs {:?} vals {:?}", kl, left, right, get_left_pos(*kl, &sorted_r, gap, mod_mask),local_count, diffs, vals);
+
+            if false {
+                let mut brute_local = 0;
+                for kr in sorted_r.iter() {
+                    let diff = kl.wrapping_sub(*kr) & mod_mask;
+                    if diff < gap {
+                        brute_local += 1;
+                    }
+                }
+
+                assert!(
+                    brute_local == local_count,
+                    "brute {} local {}",
+                    brute_local,
+                    local_count,
+                );
+            }
+
+            count += local_count as u128;
+        }
+    }
+
+    if false {
+        assert!(
+            brute_count == count,
+            "brute force {} scan {}",
+            brute_count,
+            count
+        );
+    }
+
+    count
+}
+
+/** Compute total signed delta contribution, for each key_l, against all keys_r. Differences to use are L - R. */
+fn compute_raman_batch_delta(
+    keys_l: &[u64],
+    keys_r: &[u64],
+    scratch_l: &mut [u64],
+    scratch_r: &mut [u64],
+    alpha: u64,
+    alpha_bits: u32,
+    i_bits: u32,
+    u_bits: u32,
+    output_bits: u32,
+) -> u128 {
+    let mut true_sum = 0;
+    if false {
+        // By brute force, with compute_delta_mod, compute the _actual_ batch delta, so we have something
+        // to test locally against
+        for k_l in keys_l.iter() {
+            for k_r in keys_r.iter() {
+                assert!(
+                    k_l.wrapping_mul(alpha)
+                        .wrapping_sub(k_r.wrapping_mul(alpha))
+                        .trailing_zeros()
+                        == i_bits
+                );
+                let d1 = compute_delta_mod(
+                    k_l.wrapping_mul(alpha),
+                    k_r.wrapping_mul(alpha),
+                    alpha_bits,
+                    u_bits,
+                    output_bits,
+                );
+                let d2 = compute_delta_mod(
+                    k_r.wrapping_mul(alpha),
+                    k_l.wrapping_mul(alpha),
+                    alpha_bits,
+                    u_bits,
+                    output_bits,
+                );
+                true_sum += (d1 as u128) + (d2 as u128);
+            }
+        }
+    }
+
+    /* Extension differences are multiples of `1<<mult_bits` */
+    let mult_bits = alpha_bits + i_bits;
+    if mult_bits <= u_bits - output_bits {
+        /* Easy case: extension differences are _more_ fine grained than the target interval, number
+         * of bad extensions is always the same. */
+        let extensions_per_pair = 1u128 << (u_bits - output_bits - mult_bits + i_bits);
+        let npairs = (keys_l.len() as u128) * (keys_r.len() as u128);
+        let total = npairs.checked_mul(extensions_per_pair * 2).unwrap();
+        if false {
+            assert!(total == true_sum);
+        }
+        return total;
+    } else {
+        /* Tricky case: extension differences are _less_ fine grained than the target interval.
+         *
+         * For how many pairs 'k_l, k_r' does `k_r - k_l + [0,2^{u-o})` contain a multiple
+         * of 2^{alpha_bits+i}? To count these, mod by 'm = min(2^{alpha_bits+i},2^u)', and then count
+         * the number of cases where `k_r - k_l + [0,2^{u-o})` contains 0 under this mod;
+         * in other words, where `kl - kr mod m` is < 2^{u-o}`.
+         *
+         * Is there any way to amortize costs across function calls when mult_bits >= u_bits?
+         * (This may be difficult to do since the lists might (or might not) change significantly
+         * with each alpha update; but if this can be done, then one could significantly reduce
+         * the cost of querying.)
+         */
+        let mod_mask = if mult_bits < u_bits {
+            (1 << mult_bits) - 1
+        } else {
+            u64::MAX
+        };
+        let weight = if mult_bits < u_bits {
+            1 << i_bits
+        } else {
+            1 << (u_bits - alpha_bits)
+        };
+
+        if keys_l.is_empty() || keys_r.is_empty() {
+            /* Note: to have more 'worst-case' like behavior, move this check after the sorting is done.
+             * (The most average-case-friendly optimization may be to build an index of nontrivial
+             * key/value pairs; on fully random input, most common lsb-prefixes are short so all long
+             * prefixes can be entirely skipped.) */
+            return 0;
+        }
+
+        /* Note: `mod_mask` is also applied during the ring count, so one could avoid
+         * masking here, and apply the mask while sorting; doing this
+         * would require adjusting the 'all_equal' case of compute_raman_batch_ring_count. */
+        for (ak, k) in scratch_l.iter_mut().zip(keys_l.iter()) {
+            *ak = k.wrapping_mul(alpha) & mod_mask;
+        }
+        for (ak, k) in scratch_r.iter_mut().zip(keys_r.iter()) {
+            *ak = k.wrapping_mul(alpha) & mod_mask;
+        }
+        scratch_l.sort_unstable();
+        scratch_r.sort_unstable();
+
+        let gap = 1 << (u_bits - output_bits);
+
+        let count_lr = compute_raman_batch_ring_count(&scratch_l, &scratch_r, gap, mod_mask);
+        let count_rl = compute_raman_batch_ring_count(&scratch_r, &scratch_l, gap, mod_mask);
+        let count = count_rl + count_lr;
+
+        if false {
+            assert!(
+                count.checked_mul(weight).unwrap() == true_sum,
+                "hard path: {} {}, u={}, alpha={}, i={}, o={}; L={:?} R={:?}; count = {}",
+                count.checked_mul(weight).unwrap(),
+                true_sum,
+                u_bits,
+                alpha_bits,
+                i_bits,
+                output_bits,
+                scratch_l,
+                scratch_r,
+                count
+            );
+        }
+
+        return count.checked_mul(weight).unwrap();
+    }
+}
+
+/** Sort array by bit-reversed entries. (This is a separate non-inlined function for easier cost tracking
+ * and should not be called many times.)
+ */
+#[inline(never)]
+fn bit_rev_sort(arr: &mut [u64]) {
+    arr.sort_unstable_by_key(|x| x.reverse_bits());
+}
+
+/* Variant of Raman95 using a pessimistic estimator for 'bad extensions'
+ * that may be more amenable to optimizations, with iteration order
+ * improvements and batch optimizations, but no 'cross-bit' optimizations.
+ *
+ * Runtime: O(n b^2 (log n)). (It may be possible to improve this to O(n b^2)
+ * by combining sort operations between `i` passes, but `mod_mask` complicates
+ * this, and the sorting operation is not clearly a bottleneck in practice;
+ * rather, the O(b^2) operations per element are. Further improvements may be
+ * possible (e.g: using the structure of the longest common prefix array).)
+ */
+fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> RamanHashFast {
+    assert!(u_bits == u64::BITS);
+    assert!(keys.len() < usize::MAX / 2); /* For wrapping index calculations */
+
+    /* To efficiently iterate over pairs of groups of keys whose lsb `i` bits match
+     * (and whose `i+1`th bit differs), it suffices to _sort_ the key set and then
+     * scan over the result. */
+    let mut rev_sorted_keys_vec = Vec::from(keys);
+    /* Note: if the source key set is _fixed_, then it may be practical to re-sort
+     * on every `b` iteration and multiply by `a` in-place. Or alternatively: _first_
+     * multiply by 'a', and _then_ sort the result by reversed bits, since
+     * `a` multiplication preserves lsb-prefix length for pairs. Although the
+     * difference isn't critical. */
+    bit_rev_sort(&mut rev_sorted_keys_vec);
+    let rev_sorted_keys: &[u64] = &rev_sorted_keys_vec;
+
+    /* Scratch storage table in which to write multiplied/sorted data */
+    let mut scratch = vec![0u64; keys.len()];
+
+    // let aux = build_raman_opt_aux(keys);
+
+    let mut a = 1;
+    // let mut last_wt = None;
+
+    // TODO: consider separating out calculation of the `alpha_bits + i <= u_bits - output_bits`
+    // case; it may be possible to handle all small `i` do this in better than O(b) passes.
+    // But: to make a worst-case improvement, would need an efficient way to handle the
+    // `alpha_bits + i >= u_bits` cases. (Perhaps those can be processed, for each i,
+    // using a single pair of iteration over `sort(a * keys)`, letting us amortize sorting costs?)
+
+    let mut last_wt = None;
+    for b in 0..u_bits {
+        /* Calculate the "weight" (total bad extension mass) of the extension of `a` by a 0-bit. This,
+         * plus the weight of the 1-bit extension, should equal the weight from the previous
+         * iteration. (Except in first round, where we find the initial weight of `a`.) */
+        let mut wt = 0;
+        for i in 0..u64::BITS {
+            let msk = (1 << i) - 1;
+            let mut interval_start = 0;
+            while interval_start < rev_sorted_keys.len() {
+                let common_prefix = rev_sorted_keys[interval_start] & msk;
+
+                let mut count1 = 0;
+                let mut interval_end = interval_start;
+
+                // TODO: use an enumerated &iterator? Or are bounds checks already eliminated
+                while interval_end < rev_sorted_keys.len()
+                    && (rev_sorted_keys[interval_end] & msk) == common_prefix
+                {
+                    count1 += (rev_sorted_keys[interval_end] & (1 << i)) >> i;
+                    interval_end += 1;
+                }
+
+                let count0 = (interval_end - interval_start) - count1 as usize;
+
+                let all_keys = &rev_sorted_keys[interval_start..interval_end];
+                let (keys0, keys1) = all_keys.split_at(count0);
+
+                /* Possible average-case optimization: use scratch[..count0+count1] for slightly better
+                 * physical memory locality. */
+                let scratch_region = &mut scratch[interval_start..interval_end];
+                let (scratch0, scratch1) = scratch_region.split_at_mut(count0);
+
+                wt += compute_raman_batch_delta(
+                    &keys0,
+                    &keys1,
+                    scratch0,
+                    scratch1,
+                    a,
+                    b + 1,
+                    i,
+                    u_bits,
+                    output_bits,
+                );
+
+                interval_start = interval_end;
+            }
+        }
+
+        if let Some(lwt) = last_wt {
+            /* Chose the sub-average branch. */
+            // wt  = lwt - wt
+            if lwt - wt < wt {
+                a |= 1 << b;
+                last_wt = Some(lwt - wt);
+            } else {
+                last_wt = Some(wt);
+            }
+        } else {
+            last_wt = Some(wt);
+        }
+    }
+    RamanHashFast {
+        u_bits,
+        output_bits,
+        a,
+    }
+}
+
+/**
+ * Universe reduction using the Raman95 hash function, followed
+ * by HMPQuadHash.
+ *
+ * TODO: make a variant, where the first of the two double displacement
+ * hashes is replaced by a fast Raman map from `[n^2] -> [n]`. (The
+ * Raman multiplicative design has the nice property that `ax` is
+ * 1:1, so the top `log n` bits (which are low-collision hashed) and
+ * the bottom `log n` bits together uniquely identify a key.) Doing
+ * this would reduce HMP01 to a single-table design which may reduce
+ * the latency at large scales.
+ */
+pub struct FRxHMP01Hash {
+    reduction: RamanHashFast,
+    hash: HMPQuadHash,
+}
+pub type FRxHMP01Dict = HDict<FRxHMP01Hash>;
+
+impl PerfectHash<u64, u64> for FRxHMP01Hash {
+    fn new(keys: &[u64]) -> FRxHMP01Hash {
+        let reduction = RamanHashFast::new(keys);
+        let r_bits = reduction.output_bits.div_ceil(2);
+        let reduced_keys: Vec<(u64, u64)> = keys
+            .iter()
+            .map(|k| {
+                let v = reduction.query(*k);
+                (v >> r_bits, v & ((1 << r_bits) - 1))
+            })
+            .collect();
+        let hash = HMPQuadHash::new(&reduced_keys, r_bits);
+        FRxHMP01Hash { reduction, hash }
+    }
+    fn query(&self, key: u64) -> u64 {
+        let v = self.reduction.query(key);
+        self.hash
+            .query(v >> self.hash.r_bits, v & ((1 << self.hash.r_bits) - 1))
+    }
+    fn output_bits(&self) -> u32 {
+        self.hash.r_bits
+    }
+}
+
+/* ---------------------------------------------------------------------------- */
+
+/** The FKS84 hash construction using RamanHashFast for the primary hash, and Raman95Hash
+ * for the secondary hash (because while the latter takes quadratic time, it is a bit faster
+ * than the batch construction on small inputs.)
+ *
+ * NOTE: it may be worth switching between quadratic/near-linear constructions on large inputs,
+ * and/or special casing O(1) sized inputs to save space.
+ */
+pub struct FRxFKSHash {
+    primary_hash: RamanHashFast,
+    // secondary hashes + base offsets. Note: the u_bits values for these are all the same
+    secondary_hashes: Vec<(Raman95Hash, u64)>,
+    output_bits: u32,
+}
+pub type FRxFKSDict = HDict<FRxFKSHash>;
+
+impl PerfectHash<u64, u64> for FRxFKSHash {
+    fn new(keys: &[u64]) -> Self {
+        let n_bits = next_log_power_of_two(keys.len());
+
+        /* Number of bits in the secondary table. The number of collisions `c` should
+         * be <= 4 n(n-1)/2 / 2^s. The amount of space needed for all secondary
+         * tables is sum{ 4^ceil{log b} } where b is the bucket size. Since
+         * `max_b (4^ceil{log b}) / (b(b-1)/2 + 1) <= 8, we will end up with
+         * <= (8 (n + c)) possible output values. Reducing `c` lower than `n`
+         * does not gain much, so we may as well set `s = 1 + ceil{log n}` to
+         * get `c < n`. Then there are <= 16 n outputs.
+         *
+         * TODO: do a tighter analysis; as the secondary hash table has O(n) entries,
+         * there is little to gain in shrinking it at the expense the number of
+         * output bits (and associated 16 byte/entry) output table. Therefore:
+         * should set parameters to minimize (16 << output_bits + 24 << s_bits).
+         *
+         * (For example: `4^ceil{log b}` is inefficient; use 2^ceil{log b(b-1)})
+         * instead? Also, single-element buckets can easily be packed inside the
+         * gaps from by other buckets. At the extreme, one could use the second
+         * HMP01 displacement step to find offsets for each of the
+         * post-secondary-hash buckets, but it is unclear to whether this
+         * improves on just greedily placing all O(1) sized buckets.)
+         */
+        let s_bits = 1 + n_bits;
+        let output_bits = 4 + n_bits;
+
+        let primary_hash = raman_opt_batch_construction(keys, u64::BITS, s_bits);
+        let mut buckets: Vec<Vec<u64>> = Vec::new();
+        buckets.resize_with(1 << s_bits, Vec::new);
+        for k in keys {
+            buckets[primary_hash.query(*k) as usize].push(*k);
+        }
+        let mut bucket_offset = 0;
+        let mut secondary_hashes = Vec::new();
+        for list in buckets {
+            let hash = Raman95Hash::new(&list);
+            let hash_size = 1u64 << hash.output_bits;
+            secondary_hashes.push((hash, bucket_offset));
+            if !list.is_empty() {
+                bucket_offset += hash_size;
+            }
+        }
+
+        FRxFKSHash {
+            primary_hash,
+            secondary_hashes,
+            output_bits,
+        }
+    }
+    fn output_bits(&self) -> u32 {
+        self.output_bits
+    }
+
+    fn query(&self, key: u64) -> u64 {
+        let index = self.primary_hash.query(key);
+        let (hash2, offset) = &self.secondary_hashes[index as usize];
+        let index2 = hash2.query(key);
+        index2 + offset
+    }
+}
+
+#[test]
+fn test_frxfks_hash() {
+    test_perfect_hash::<FRxFKSHash>();
 }

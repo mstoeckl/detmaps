@@ -21,6 +21,7 @@ enum GenericDict {
     HMP01u(HMP01UnreducedDict),
     R09BxHMP01(R09BxHMP01Dict),
     XorxHMP01(XorReducedDict),
+    FrxHMP01(FRxHMP01Dict),
     R09a(Ruzic09Dict),
 }
 impl GenericDict {
@@ -33,6 +34,7 @@ impl GenericDict {
             "hmp01u" => Self::HMP01u(HMP01UnreducedDict::new(data)),
             "r09b+hmp01" => Self::R09BxHMP01(R09BxHMP01Dict::new(data)),
             "xor+hmp01" => Self::XorxHMP01(XorReducedDict::new(data)),
+            "fr+hmp01" => Self::FrxHMP01(FRxHMP01Dict::new(data)),
             "r09a" => Self::R09a(Ruzic09Dict::new(data)),
             _ => panic!("Unknown dict type: {}", tp),
         }
@@ -53,6 +55,7 @@ impl Dict<u64, u64> for GenericDict {
             Self::HMP01u(ref v) => v.query(key),
             Self::R09BxHMP01(ref v) => v.query(key),
             Self::XorxHMP01(ref v) => v.query(key),
+            Self::FrxHMP01(ref v) => v.query(key),
             Self::R09a(ref v) => v.query(key),
         }
     }

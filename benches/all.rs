@@ -113,17 +113,23 @@ fn criterion_benchmark(c: &mut Criterion) {
                 bench_group::<HMP01UnreducedDict>(bits, &mut group, "hmp01u", pattern, *patfn);
             }
             if bits <= 22 {
-                bench_group::<R09BxHMP01Dict>(bits, &mut group, "r09bxhmp01", pattern, *patfn);
+                bench_group::<R09BxHMP01Dict>(bits, &mut group, "r09b+hmp01", pattern, *patfn);
             }
             if bits <= 22 {
                 bench_group::<XorReducedDict>(bits, &mut group, "xor+hmp01", pattern, *patfn);
             }
             if bits <= 22 {
+                bench_group::<FRxHMP01Dict>(bits, &mut group, "fr+hmp01", pattern, *patfn);
+            }
+            if bits <= 22 {
+                bench_group::<FRxFKSDict>(bits, &mut group, "fr+fks", pattern, *patfn);
+            }
+            if bits <= 25 {
                 bench_group::<Ruzic09Dict>(bits, &mut group, "r09a", pattern, *patfn);
             }
             if bits <= 12 {
-                /* This construction has _quadratic_ output size and is only suitable for small inputs */
-                bench_group::<Raman96Dict>(bits, &mut group, "raman96", pattern, *patfn);
+                /* This construction has _quadratic_ construction time and output size and is only suitable for small input sizes */
+                bench_group::<Raman95Dict>(bits, &mut group, "raman95", pattern, *patfn);
             }
         }
     }
