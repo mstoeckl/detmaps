@@ -46,8 +46,8 @@ functions are usually fast to evaluate. There are three approximate categories:
     practice. Uses `O(\log n)` bits of space and `O(n polylog n)` construction
     time.
   - Raman95: `[2^b] -> [O(n^2)]` with `O(b)` bits of space, but takes `O(n^2 b)`
-    time. It is possible to construct it more quickly (`O(n b^2 log n)` time) if
-    the range is increased by a constant factor.
+    time. Uses the odd-multiply-shift hash family. There is a (as yet
+    unpublished) algorithm using `O(n b^2 log n)` time.
   - Derandomized tabulation hashing: `[n^{2k}]->[n^2]` using `O(n k polylog n)`
     space and construction time, but can be fast to evaluate when `n` is small.
   - (Not implemented) AlonN94, `O(b)` space, `O(n b (log n)^3)` time.

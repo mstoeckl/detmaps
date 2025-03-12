@@ -6,13 +6,15 @@ use std::hash::Hash;
 pub mod util;
 
 pub trait Dict<K, V> {
+    /** Construct a dictionary for the given key-value pairs. All keys must be unique */
     fn new(data: &[(K, V)]) -> Self;
+    /** Find the value for a key, if one exists */
     fn query(&self, key: K) -> Option<V>;
 }
 
 pub trait PerfectHash<K, V> {
-    /** Construct a perfect hash for a set of _unique_ keys */
-    fn new(keys: &[K]) -> Self; // TODO: also parameterize by universe_bits ?
+    /** Construct a perfect hash for a set of _unique_ keys, where each key is <1<<u_bits. */
+    fn new(keys: &[K], u_bits: u32) -> Self;
     /** Map a key to a value, with no two inputs in the set mapping to the same value */
     fn query(&self, key: K) -> V;
     /** Number of output bits */
@@ -31,9 +33,9 @@ pub struct HDict<H: PerfectHash<u64, u64>> {
 }
 
 impl<T: PerfectHash<u128, u64>> PerfectHash<u64, u64> for T {
-    fn new(keys: &[u64]) -> Self {
+    fn new(keys: &[u64], u_bits: u32) -> Self {
         let keys_u128: Vec<u128> = keys.iter().map(|x| *x as u128).collect();
-        T::new(&keys_u128)
+        T::new(&keys_u128, u_bits)
     }
     fn query(&self, key: u64) -> u64 {
         PerfectHash::<u128, u64>::query(self, key as u128)
@@ -46,7 +48,7 @@ impl<T: PerfectHash<u128, u64>> PerfectHash<u64, u64> for T {
 impl<H: PerfectHash<u64, u64>> Dict<u64, u64> for HDict<H> {
     fn new(data: &[(u64, u64)]) -> Self {
         let keys: Vec<u64> = data.iter().map(|x| x.0).collect();
-        let hash = H::new(&keys);
+        let hash = H::new(&keys, u64::BITS);
         drop(keys);
 
         if false {
@@ -2381,19 +2383,81 @@ fn test_ruzic09_dict() {
 
 /* ---------------------------------------------------------------------------- */
 
-/** The Raman96 hash construction; construction time is roughly quadratic in the
- * input set size */
-pub struct Raman95Hash {
-    u_bits: u32,
-    output_bits: u32,
+/** A simple and very fast hash function.
+ *
+ * Typically `a` is an odd integer, and shift = u_bits - output_bits.
+ *
+ * However:
+ * - Universes smaller than u64::BITS are handled by shifting 'a' left so that u64
+ *   wrapping implements the mod-u for free, and then shifting the result back
+ *   afterwards.
+ * - When hashing empty or single element sets, we set `a = 0` because shifting
+ *   by default wraps instead of saturating, so (a*k)>>64 doesn't return zero.
+ *
+ * For specific applications, other conventions may make sense (and might hint to
+ * the compiler what the structure of `a` and `shift` are.) (But this could
+ * so be done using assert_unchecked!...)
+ */
+#[derive(Clone, Copy)]
+struct MultiplyShiftHash {
     a: u64,
+    shift: u32, /* Stored as u32, but u8 would suffice. */
+}
+impl MultiplyShiftHash {
+    #[inline(always)]
+    fn query(&self, key: u64) -> u64 {
+        key.wrapping_mul(self.a) >> self.shift
+    }
+    #[inline(always)]
+    fn output_bits(&self) -> u32 {
+        if self.a == 0 {
+            0
+        } else {
+            u64::BITS - self.shift
+        }
+    }
 }
 
+/** Multiply shift construction optimized for small sets */
+fn small_set_multiply_shift(keys: &[u64]) -> MultiplyShiftHash {
+    assert!(keys.len() <= 2);
+    if keys.len() <= 1 {
+        return MultiplyShiftHash { a: 0, shift: 0 };
+    };
+
+    let (x, y) = (keys[0], keys[1]);
+    assert!(x != y);
+    let j = u64::BITS - (x ^ y).leading_zeros() - 1;
+    MultiplyShiftHash {
+        a: (1 << (u64::BITS - j - 1)),
+        shift: u64::BITS - 1,
+    }
+}
+
+#[test]
+fn test_small_multiply_shift() {
+    let x = [0, 1 << 17];
+    let h = small_set_multiply_shift(&x);
+    assert!(h.output_bits() == 1);
+    assert!(h.query(x[0]) != h.query(x[1]));
+}
+
+/* ---------------------------------------------------------------------------- */
+
+/** The Raman96 hash construction; construction time is roughly quadratic in the
+ * input set size */
+#[derive(Clone, Copy)]
+pub struct Raman95Hash(MultiplyShiftHash);
+
 fn compute_raman95_multiplier(keys: &[u64], u_bits: u32) -> (u64, u32) {
-    let output_bits = next_log_power_of_two(keys.len()).max(1) * 2; // n^2 space, is > n(n-1)/2
+    // TODO: special case for n=1 and n=2
+    let output_bits =
+        next_log_power_of_two(keys.len().wrapping_mul(keys.len().wrapping_sub(1)) + 1).max(1);
     assert!(output_bits < u64::BITS);
 
-    assert!(u_bits == u64::BITS);
+    /* Shift value to apply to the multiplier */
+    let u_compensation_shift = u64::BITS - u_bits;
+    assert!(keys.iter().all(|k| util::saturating_shr(*k, u_bits) == 0));
 
     /** The number of extensions `a` of α for which
      * `a(x-y) mod (2^u) is in [-2^{u-o}+1,...2^{u-o}-1]`
@@ -2490,42 +2554,45 @@ fn compute_raman95_multiplier(keys: &[u64], u_bits: u32) -> (u64, u32) {
     /* With each bit chosen, the sum over all pairs of keys of the "bad extension count"
      * reduces to at most half the previous value. */
     // println!("{:?}", keys);
-    for b in 1..u_bits {
+    for b in 1..u64::BITS {
         let mut wt0 = 0;
         let mut wt1 = 0;
         let a1 = a | (1 << b);
         for i in 0..keys.len() {
             for j in 0..i {
+                let ki = keys[i] << u_compensation_shift;
+                let kj = keys[j] << u_compensation_shift;
+
                 // should have have keys[i]/keys[j] symmetry, for now
-                let delta0 = compute_delta(keys[i], keys[j], a, b + 1, u_bits, output_bits);
-                let delta1 = compute_delta(keys[i], keys[j], a1, b + 1, u_bits, output_bits);
+                let delta0 = compute_delta(ki, kj, a, b + 1, u64::BITS, output_bits);
+                let delta1 = compute_delta(ki, kj, a1, b + 1, u64::BITS, output_bits);
                 if delta0 == 0 {
                     assert!(
-                        a.wrapping_mul(keys[i]) >> (u_bits - output_bits)
-                            != a.wrapping_mul(keys[j]) >> (u_bits - output_bits),
+                        a.wrapping_mul(ki) >> (u64::BITS - output_bits)
+                            != a.wrapping_mul(kj) >> (u64::BITS - output_bits),
                         "{} {} diff {} {} | {} {}",
-                        a.wrapping_mul(keys[i]) >> (u_bits - output_bits),
-                        a.wrapping_mul(keys[j]) >> (u_bits - output_bits),
-                        a.wrapping_mul(keys[i].wrapping_sub(keys[j])) >> (u_bits - output_bits),
-                        a.wrapping_mul(keys[j].wrapping_sub(keys[i])) >> (u_bits - output_bits),
-                        a.wrapping_mul(keys[i].wrapping_sub(keys[j])),
-                        a.wrapping_mul(keys[j].wrapping_sub(keys[i])),
+                        a.wrapping_mul(ki) >> (u64::BITS - output_bits),
+                        a.wrapping_mul(kj) >> (u64::BITS - output_bits),
+                        a.wrapping_mul(ki.wrapping_sub(kj)) >> (u64::BITS - output_bits),
+                        a.wrapping_mul(kj.wrapping_sub(ki)) >> (u64::BITS - output_bits),
+                        a.wrapping_mul(ki.wrapping_sub(kj)),
+                        a.wrapping_mul(kj.wrapping_sub(ki)),
                     );
                 }
                 if delta1 == 0 {
                     assert!(
-                        a1.wrapping_mul(keys[i]) >> (u_bits - output_bits)
-                            != a1.wrapping_mul(keys[j]) >> (u_bits - output_bits)
+                        a1.wrapping_mul(ki) >> (u64::BITS - output_bits)
+                            != a1.wrapping_mul(kj) >> (u64::BITS - output_bits)
                     );
                 }
 
                 // also: delta0+delta1 = {delta with old a value}
                 assert!(
-                    delta0 <= (1 << (u_bits - b - 1)) && delta1 <= (1 << (u_bits - b - 1)),
+                    delta0 <= (1 << (u64::BITS - b - 1)) && delta1 <= (1 << (u64::BITS - b - 1)),
                     "delta0 {} delta1 {} lim {}",
                     delta0,
                     delta1,
-                    1u64 << (u_bits - b - 1)
+                    1u64 << (u64::BITS - b - 1)
                 );
                 wt0 += delta0 as u128;
                 wt1 += delta1 as u128;
@@ -2542,28 +2609,27 @@ fn compute_raman95_multiplier(keys: &[u64], u_bits: u32) -> (u64, u32) {
         }
         // println!("a: {:064b}, b {}, wt0 {}, wt1 {}", a, b, wt0, wt1);
     }
-    (a, output_bits)
+    assert!(util::saturating_shr(a, u_bits) == 0);
+    (a << u_compensation_shift, output_bits)
 }
 
 impl PerfectHash<u64, u64> for Raman95Hash {
-    fn new(keys: &[u64]) -> Self {
-        let u_bits = u64::BITS;
-
+    fn new(keys: &[u64], u_bits: u32) -> Self {
+        if keys.len() <= 2 {
+            return Raman95Hash(small_set_multiply_shift(keys));
+        }
         let (a, output_bits) = compute_raman95_multiplier(keys, u_bits);
 
-        Raman95Hash {
-            u_bits,
-            output_bits,
+        Raman95Hash(MultiplyShiftHash {
             a,
-        }
+            shift: (u64::BITS - output_bits),
+        })
     }
     fn query(&self, key: u64) -> u64 {
-        /* The last %2^o is only needed if u<64 */
-        ((key.wrapping_mul(self.a)) >> (self.u_bits - self.output_bits))
-            & ((1 << self.output_bits) - 1)
+        self.0.query(key)
     }
     fn output_bits(&self) -> u32 {
-        self.output_bits
+        self.0.output_bits()
     }
 }
 
@@ -2578,39 +2644,40 @@ fn test_perfect_hash<H: PerfectHash<u64, u64>>() {
         sizes.push(3 << j);
     }
     sizes.reverse();
-    for s in sizes {
-        let pow = 64 / next_log_power_of_two(s + 2);
+
+    let mut sizes_and_u: Vec<(usize, u32)> = sizes.iter().map(|s| (*s, u64::BITS)).collect();
+    sizes_and_u.push((128, 32));
+    sizes_and_u.push((16, 5));
+
+    for (s, u_bits) in sizes_and_u {
+        assert!(util::saturating_shr(s as u64, u_bits) == 0);
+        let pow = u_bits / next_log_power_of_two(s + 2);
         let keys: Vec<u64> = (0..s as u64).map(|x| x.wrapping_pow(pow)).collect();
         assert!(keys.len() == BTreeSet::from_iter(keys.iter().copied()).len());
-        let hash = H::new(&keys);
-        // TODO: an output bit set is only appropriate if the size is O(n); use BTreeSet only once (output_size >= s * 16) (or s*128 if using bitset)
-        let mut outputs = vec![false; 1 << hash.output_bits()]; // todo: use bitset
+        let hash = H::new(&keys, u_bits);
+
+        let mut outputs = Vec::new();
         for k in keys {
+            outputs.push((hash.query(k), k));
+        }
+        outputs.sort_unstable();
+        for w in outputs.windows(2) {
             assert!(
-                outputs[hash.query(k) as usize] == false,
-                "s: {}, k {} -> h(k) {}",
+                w[0].0 != w[1].0,
+                "hash collision at size {}: {}->{} and {}->{}",
                 s,
-                k,
-                hash.query(k)
+                w[0].1,
+                w[0].0,
+                w[1].1,
+                w[1].0
             );
-            outputs[hash.query(k) as usize] = true;
         }
     }
 }
 
 #[test]
-fn test_raman96_hash() {
+fn test_raman95_hash() {
     test_perfect_hash::<Raman95Hash>();
-}
-
-#[test]
-fn test_raman96_dict() {
-    // TODO: make a generic 'test_perfect_hash<H>' function that checks the hash against a wide range of inputs, including small inputs!
-    let x: Vec<(u64, u64)> = (0..(1u64 << 5)).map(|x| (x.wrapping_pow(6), x)).collect();
-    let dict = HDict::<Raman95Hash>::new(&x);
-    for (k, v) in x {
-        assert!(Some(v) == dict.query(k));
-    }
 }
 
 /** A variant of the Raman96 hash construction with a slightly more memory intensive
@@ -2626,35 +2693,31 @@ struct IterMulHash {
 
 /** Same as [Raman95Hash], but hopefully with faster construction. */
 // using a separate type
-pub struct RamanHashFast {
-    u_bits: u32,
-    output_bits: u32,
-    a: u64,
-}
-pub type RamanFastDict = HDict<RamanHashFast>;
+pub struct FastOMS(MultiplyShiftHash);
+pub type OMSDict = HDict<FastOMS>;
 
-impl PerfectHash<u64, u64> for RamanHashFast {
-    fn new(keys: &[u64]) -> Self {
-        let u_bits = u64::BITS;
+impl PerfectHash<u64, u64> for FastOMS {
+    fn new(keys: &[u64], u_bits: u32) -> Self {
+        if keys.len() <= 2 {
+            return FastOMS(small_set_multiply_shift(keys));
+        }
 
-        // 2n^2 space, because the bad extension count may be doubled with the modified criterion
-        let output_bits = 1 + next_log_power_of_two(keys.len()).max(1) * 2;
+        let output_bits =
+            next_log_power_of_two(keys.len().wrapping_mul(keys.len().wrapping_sub(1)) + 1).max(1);
         assert!(output_bits < u64::BITS);
 
-        raman_opt_batch_construction(keys, u_bits, output_bits)
+        FastOMS(oms_opt_batch_construction(keys, u_bits, output_bits))
     }
     fn query(&self, key: u64) -> u64 {
-        /* The last %2^o is only needed if u<64 */
-        ((key.wrapping_mul(self.a)) >> (self.u_bits - self.output_bits))
-            & ((1 << self.output_bits) - 1)
+        self.0.query(key)
     }
     fn output_bits(&self) -> u32 {
-        self.output_bits
+        self.0.output_bits()
     }
 }
 
 #[cfg(test)]
-struct RamanOptBitClass {
+struct OmsOptBitClass {
     /* Common suffix of all keys, of length `i`, where `i` is implicit */
     common_suffix: u64,
     /* Keys where bit `i+1` is 0, in arbitrary order */
@@ -2664,24 +2727,24 @@ struct RamanOptBitClass {
 }
 
 #[cfg(test)]
-struct RamanOptAux {
+struct OmsOptAux {
     // Indexed by the common suffix length `i`.
     // All keys should be unique
-    by_last_bits: Vec<BTreeMap<u64, RamanOptBitClass>>,
+    by_last_bits: Vec<BTreeMap<u64, OmsOptBitClass>>,
 }
 
 /** Build an index of keys by common suffix length. Requires: all keys to be unique. */
 #[cfg(test)]
-fn build_raman_opt_aux(keys: &[u64]) -> RamanOptAux {
-    let mut aux = RamanOptAux {
+fn build_oms_opt_aux(keys: &[u64]) -> OmsOptAux {
+    let mut aux = OmsOptAux {
         by_last_bits: Vec::new(),
     };
     for i in 0..u64::BITS {
-        let mut table: BTreeMap<u64, RamanOptBitClass> = BTreeMap::new();
+        let mut table: BTreeMap<u64, OmsOptBitClass> = BTreeMap::new();
         for k in keys.iter() {
             let suffix = k & ((1 << i) - 1);
             let zbit = k & (1 << i) == 0;
-            let entry = table.entry(suffix).or_insert(RamanOptBitClass {
+            let entry = table.entry(suffix).or_insert(OmsOptBitClass {
                 common_suffix: suffix,
                 keys_0: Vec::new(),
                 keys_1: Vec::new(),
@@ -2732,6 +2795,8 @@ fn compute_delta_mod(ax: u64, ay: u64, alpha_bits: u32, u_bits: u32, output_bits
     let u: u64 = ep.wrapping_sub(diff);
     let i = diff.trailing_zeros();
 
+    assert!(i < u_bits - output_bits);
+
     if alpha_bits + i >= u_bits {
         if l > u {
             return 1 << (u_bits - alpha_bits);
@@ -2757,13 +2822,13 @@ fn compute_delta_mod(ax: u64, ay: u64, alpha_bits: u32, u_bits: u32, output_bits
  * that may be more amenable to batch optimizations, but with only iteration
  * order improvements enabled for easier debugging and comparison. */
 #[cfg(test)]
-fn raman_opt_slow_construction(keys: &[u64], u_bits: u32) -> RamanHashFast {
+fn oms_opt_slow_construction(keys: &[u64], u_bits: u32) -> MultiplyShiftHash {
     assert!(u_bits == u64::BITS);
     // 2n^2 space, because the bad extension count may be doubled with the modified criterion
     let output_bits = 1 + next_log_power_of_two(keys.len()).max(1) * 2;
     assert!(output_bits < u64::BITS);
 
-    let aux = build_raman_opt_aux(keys);
+    let aux = build_oms_opt_aux(keys);
 
     let mut a = 1;
     let mut last_wt = None;
@@ -2775,7 +2840,7 @@ fn raman_opt_slow_construction(keys: &[u64], u_bits: u32) -> RamanHashFast {
         let mut wt1 = 0;
         let a1 = a | (1 << b);
         for k in keys {
-            for i in 0..u64::BITS {
+            for i in 0..(u64::BITS - output_bits) {
                 let suffix = k & ((1 << i) - 1);
                 let zbit = k & (1 << i) == 0;
                 let entry = &aux.by_last_bits[i as usize][&suffix];
@@ -2820,16 +2885,15 @@ fn raman_opt_slow_construction(keys: &[u64], u_bits: u32) -> RamanHashFast {
         }
         // println!("a: {:064b}, b {}, wt0 {}, wt1 {}", a, b, wt0, wt1);
     }
-    RamanHashFast {
-        u_bits,
-        output_bits,
+    MultiplyShiftHash {
         a,
+        shift: u64::BITS - output_bits,
     }
 }
 
 #[test]
-fn test_raman_fast_hash() {
-    test_perfect_hash::<RamanHashFast>();
+fn test_oms_fast_hash() {
+    test_perfect_hash::<FastOMS>();
 
     /* Check that the fast and slow constructions produce _exactly_ the same hash functions */
     let mut seqs: Vec<Vec<u64>> = Vec::new();
@@ -2847,15 +2911,15 @@ fn test_raman_fast_hash() {
     }
 
     for keys in seqs {
-        let hash2 = raman_opt_slow_construction(&keys, u64::BITS);
-        let hash1 = raman_opt_batch_construction(&keys, u64::BITS, hash2.output_bits);
-        assert!(hash1.a == hash2.a && hash1.output_bits == hash2.output_bits);
+        let hash2 = oms_opt_slow_construction(&keys, u64::BITS);
+        let hash1 = oms_opt_batch_construction(&keys, u64::BITS, hash2.output_bits());
+        assert!(hash1.a == hash2.a && hash1.output_bits() == hash2.output_bits());
     }
 }
 
 /** Compute _one_ direction (L - R) of batch delta case where extension differences are spaced more widely
  *.than the target interval. Note: sorted_l/sorted_r must be sorted ascending by |k| k & mod_mask */
-fn compute_raman_batch_ring_count(
+fn compute_oms_batch_ring_count(
     sorted_l: &[u64],
     sorted_r: &[u64],
     gap: u64,
@@ -3071,7 +3135,7 @@ fn compute_raman_batch_ring_count(
 }
 
 /** Compute total signed delta contribution, for each key_l, against all keys_r. Differences to use are L - R. */
-fn compute_raman_batch_delta(
+fn compute_oms_batch_delta(
     keys_l: &[u64],
     keys_r: &[u64],
     scratch_l: &mut [u64],
@@ -3118,9 +3182,9 @@ fn compute_raman_batch_delta(
     if mult_bits <= u_bits - output_bits {
         /* Easy case: extension differences are _more_ fine grained than the target interval, number
          * of bad extensions is always the same. */
-        let extensions_per_pair = 1u128 << (u_bits - output_bits - mult_bits + i_bits);
-        let npairs = (keys_l.len() as u128) * (keys_r.len() as u128);
-        let total = npairs.checked_mul(extensions_per_pair * 2).unwrap();
+        let extensions_per_pair = 1u128 << (u_bits - output_bits - alpha_bits);
+        let npairs = (keys_l.len() as u128) * (keys_r.len() as u128) * 2;
+        let total = npairs.checked_mul(extensions_per_pair).unwrap();
         if false {
             assert!(total == true_sum);
         }
@@ -3159,7 +3223,7 @@ fn compute_raman_batch_delta(
 
         /* Note: `mod_mask` is also applied during the ring count, so one could avoid
          * masking here, and apply the mask while sorting; doing this
-         * would require adjusting the 'all_equal' case of compute_raman_batch_ring_count. */
+         * would require adjusting the 'all_equal' case of [compute_oms_batch_ring_count]. */
         for (ak, k) in scratch_l.iter_mut().zip(keys_l.iter()) {
             *ak = k.wrapping_mul(alpha) & mod_mask;
         }
@@ -3171,8 +3235,8 @@ fn compute_raman_batch_delta(
 
         let gap = 1 << (u_bits - output_bits);
 
-        let count_lr = compute_raman_batch_ring_count(&scratch_l, &scratch_r, gap, mod_mask);
-        let count_rl = compute_raman_batch_ring_count(&scratch_r, &scratch_l, gap, mod_mask);
+        let count_lr = compute_oms_batch_ring_count(&scratch_l, &scratch_r, gap, mod_mask);
+        let count_rl = compute_oms_batch_ring_count(&scratch_r, &scratch_l, gap, mod_mask);
         let count = count_rl + count_lr;
 
         if false {
@@ -3213,14 +3277,16 @@ fn bit_rev_sort(arr: &mut [u64]) {
  * rather, the O(b^2) operations per element are. Further improvements may be
  * possible (e.g: using the structure of the longest common prefix array).)
  */
-fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> RamanHashFast {
-    assert!(u_bits == u64::BITS);
+fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> MultiplyShiftHash {
     assert!(keys.len() < usize::MAX / 2); /* For wrapping index calculations */
+
+    let u_compensation_shift = u64::BITS - u_bits;
 
     /* To efficiently iterate over pairs of groups of keys whose lsb `i` bits match
      * (and whose `i+1`th bit differs), it suffices to _sort_ the key set and then
      * scan over the result. */
-    let mut rev_sorted_keys_vec = Vec::from(keys);
+    let mut rev_sorted_keys_vec = Vec::from_iter(keys.iter().map(|k| k << u_compensation_shift));
+    let _ = keys;
     /* Note: if the source key set is _fixed_, then it may be practical to re-sort
      * on every `b` iteration and multiply by `a` in-place. Or alternatively: _first_
      * multiply by 'a', and _then_ sort the result by reversed bits, since
@@ -3230,9 +3296,9 @@ fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> 
     let rev_sorted_keys: &[u64] = &rev_sorted_keys_vec;
 
     /* Scratch storage table in which to write multiplied/sorted data */
-    let mut scratch = vec![0u64; keys.len()];
+    let mut scratch = vec![0u64; rev_sorted_keys.len()];
 
-    // let aux = build_raman_opt_aux(keys);
+    // let aux = build_oms_opt_aux(keys);
 
     let mut a = 1;
     // let mut last_wt = None;
@@ -3244,14 +3310,18 @@ fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> 
     // using a single pair of iteration over `sort(a * keys)`, letting us amortize sorting costs?)
 
     let mut last_wt = None;
+    /* Bits in 'a' higher than or at u_bits have no effect on the output */
     for b in 0..u_bits {
         /* Calculate the "weight" (total bad extension mass) of the extension of `a` by a 0-bit. This,
          * plus the weight of the 1-bit extension, should equal the weight from the previous
          * iteration. (Except in first round, where we find the initial weight of `a`.) */
         let mut wt = 0;
-        for i in 0..u64::BITS {
+        /* Can entirely ignore keys matching on the bottom `u-o` keys, because multiplying
+         * them by 'a' never causes a collision */
+        for i in 0..(u64::BITS - output_bits) {
             let msk = (1 << i) - 1;
             let mut interval_start = 0;
+            let mut lvl_i_wt = 0;
             while interval_start < rev_sorted_keys.len() {
                 let common_prefix = rev_sorted_keys[interval_start] & msk;
 
@@ -3276,7 +3346,8 @@ fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> 
                 let scratch_region = &mut scratch[interval_start..interval_end];
                 let (scratch0, scratch1) = scratch_region.split_at_mut(count0);
 
-                wt += compute_raman_batch_delta(
+                // TODO: report the 'interaction_count' instead, and defer scaling until weight aggregation
+                lvl_i_wt += compute_oms_batch_delta(
                     &keys0,
                     &keys1,
                     scratch0,
@@ -3284,12 +3355,13 @@ fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> 
                     a,
                     b + 1,
                     i,
-                    u_bits,
+                    u64::BITS,
                     output_bits,
                 );
 
                 interval_start = interval_end;
             }
+            wt += lvl_i_wt;
         }
 
         if let Some(lwt) = last_wt {
@@ -3305,10 +3377,10 @@ fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> 
             last_wt = Some(wt);
         }
     }
-    RamanHashFast {
-        u_bits,
-        output_bits,
-        a,
+    assert!(util::saturating_shr(a, u_bits) == 0);
+    MultiplyShiftHash {
+        shift: u64::BITS - output_bits,
+        a: a << u_compensation_shift,
     }
 }
 
@@ -3325,15 +3397,15 @@ fn raman_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> 
  * the latency at large scales.
  */
 pub struct FRxHMP01Hash {
-    reduction: RamanHashFast,
+    reduction: FastOMS,
     hash: HMPQuadHash,
 }
 pub type FRxHMP01Dict = HDict<FRxHMP01Hash>;
 
 impl PerfectHash<u64, u64> for FRxHMP01Hash {
-    fn new(keys: &[u64]) -> FRxHMP01Hash {
-        let reduction = RamanHashFast::new(keys);
-        let r_bits = reduction.output_bits.div_ceil(2);
+    fn new(keys: &[u64], u_bits: u32) -> FRxHMP01Hash {
+        let reduction = FastOMS::new(keys, u_bits);
+        let r_bits = reduction.output_bits().div_ceil(2);
         let reduced_keys: Vec<(u64, u64)> = keys
             .iter()
             .map(|k| {
@@ -3364,55 +3436,73 @@ impl PerfectHash<u64, u64> for FRxHMP01Hash {
  * and/or special casing O(1) sized inputs to save space.
  */
 pub struct FRxFKSHash {
-    primary_hash: RamanHashFast,
+    primary_hash: MultiplyShiftHash,
     // secondary hashes + base offsets. Note: the u_bits values for these are all the same
-    secondary_hashes: Vec<(Raman95Hash, u64)>,
+    secondary_hashes: Vec<(MultiplyShiftHash, u64)>,
     output_bits: u32,
 }
 pub type FRxFKSDict = HDict<FRxFKSHash>;
 
 impl PerfectHash<u64, u64> for FRxFKSHash {
-    fn new(keys: &[u64]) -> Self {
-        let n_bits = next_log_power_of_two(keys.len());
+    fn new(keys: &[u64], u_bits: u32) -> Self {
+        /* Optimal number of bits in the secondary table. See Remark 9 of analysis.pdf
+         * for the calculation. This assumes size=1 buckets are efficiently packed
+         * into gaps. */
+        let bytes_per_leaf = std::mem::size_of::<(MultiplyShiftHash, u64)>();
+        let bytes_per_output = std::mem::size_of::<(u64, u64)>();
+        let lognm1 = next_log_power_of_two(keys.len().max(1) - 1);
+        let num = 2
+            * (bytes_per_output as u128)
+            * (keys.len() as u128)
+            * ((keys.len().max(1) - 1) as u128);
+        let denom = bytes_per_leaf as u128;
+        // todo: implement a simple integer square root
+        let logratio = next_log_power_of_two(((num / denom) as f64).sqrt() as usize);
+        let s_bits = lognm1.min(logratio).max(2); // ensure output_bits >= 1
 
-        /* Number of bits in the secondary table. The number of collisions `c` should
-         * be <= 4 n(n-1)/2 / 2^s. The amount of space needed for all secondary
-         * tables is sum{ 4^ceil{log b} } where b is the bucket size. Since
-         * `max_b (4^ceil{log b}) / (b(b-1)/2 + 1) <= 8, we will end up with
-         * <= (8 (n + c)) possible output values. Reducing `c` lower than `n`
-         * does not gain much, so we may as well set `s = 1 + ceil{log n}` to
-         * get `c < n`. Then there are <= 16 n outputs.
-         *
-         * TODO: do a tighter analysis; as the secondary hash table has O(n) entries,
-         * there is little to gain in shrinking it at the expense the number of
-         * output bits (and associated 16 byte/entry) output table. Therefore:
-         * should set parameters to minimize (16 << output_bits + 24 << s_bits).
-         *
-         * (For example: `4^ceil{log b}` is inefficient; use 2^ceil{log b(b-1)})
-         * instead? Also, single-element buckets can easily be packed inside the
-         * gaps from by other buckets. At the extreme, one could use the second
-         * HMP01 displacement step to find offsets for each of the
-         * post-secondary-hash buckets, but it is unclear to whether this
-         * improves on just greedily placing all O(1) sized buckets.)
-         */
-        let s_bits = 1 + n_bits;
-        let output_bits = 4 + n_bits;
+        let max_collisions = (keys.len() as u128) * ((keys.len().max(1) - 1) as u128) >> s_bits;
+        let output_bits = next_log_power_of_two(keys.len())
+            .max(next_log_power_of_two(4 * max_collisions as usize));
 
-        let primary_hash = raman_opt_batch_construction(keys, u64::BITS, s_bits);
+        let primary_hash = oms_opt_batch_construction(keys, u_bits, s_bits);
         let mut buckets: Vec<Vec<u64>> = Vec::new();
         buckets.resize_with(1 << s_bits, Vec::new);
         for k in keys {
             buckets[primary_hash.query(*k) as usize].push(*k);
         }
+
+        /* First place size >= 2 buckets, and then place size 1 buckets in the gaps */
+        let null_hash = Raman95Hash::new(&[], 0).0;
+        let mut secondary_hashes = vec![(null_hash, 0); 1 << s_bits];
+        let mut outputs_taken = vec![false; 1 << output_bits]; // todo: use bitset
+
         let mut bucket_offset = 0;
-        let mut secondary_hashes = Vec::new();
-        for list in buckets {
-            let hash = Raman95Hash::new(&list);
-            let hash_size = 1u64 << hash.output_bits;
-            secondary_hashes.push((hash, bucket_offset));
-            if !list.is_empty() {
-                bucket_offset += hash_size;
+        for (i, list) in buckets.iter().enumerate() {
+            if list.len() <= 1 {
+                continue;
             }
+            let hash = Raman95Hash::new(&list, u_bits).0;
+            let hash_size = 1u64 << hash.output_bits();
+            for key in list.iter() {
+                outputs_taken[(bucket_offset + hash.query(*key)) as usize] = true;
+            }
+            secondary_hashes[i] = (hash, bucket_offset);
+            bucket_offset += hash_size;
+        }
+
+        let mut free_offset = 0;
+        for (i, list) in buckets.iter().enumerate() {
+            if list.len() != 1 {
+                continue;
+            }
+            let hash = Raman95Hash::new(&list, u_bits).0;
+            assert!(hash.output_bits() == 0);
+            while outputs_taken[free_offset] {
+                free_offset += 1;
+            }
+            outputs_taken[free_offset] = true;
+            secondary_hashes[i] = (hash, free_offset as u64);
+            free_offset += 1;
         }
 
         FRxFKSHash {

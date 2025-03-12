@@ -47,6 +47,7 @@ impl Dict<u64, u64> for GenericDict {
     // note: Box<dyn > may be more useful as optimizers might lift unnecessary calculations
     #[inline(never)]
     fn query(&self, key: u64) -> Option<u64> {
+        // TODO: any way to replace the 'switch' with function pointers? unsafe casts are OK
         match self {
             Self::Binsearch(ref v) => v.query(key),
             Self::BTree(ref v) => v.query(key),

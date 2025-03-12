@@ -804,9 +804,896 @@ The last inequality follows because if
 .
 \end_layout
 
+\begin_layout Standard
+\begin_inset Separator plain
+\end_inset
+
+
+\end_layout
+
+\begin_layout Definition
+\begin_inset CommandInset label
+LatexCommand label
+name "def:odd-multiply-shift"
+
+\end_inset
+
+Odd-multiply-shift (OMS) hashing.
+ Used by 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "raman95"
+literal "false"
+
+\end_inset
+
+,
+ proved 2-approximately universal by 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "dhkp97"
+literal "false"
+
+\end_inset
+
+,
+ with the hash function type known at latest since TAOCP Vol 3 in 1973.
+ The hash family 
+\begin_inset Formula $\mathcal{H}_{b,s}$
+\end_inset
+
+ maps 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u}-1\right\} \equiv\left\{ 0,1\right\} ^{u}$
+\end_inset
+
+ to 
+\begin_inset Formula $\left\{ 0,\ldots,2^{s}-1\right\} \equiv\left\{ 0,1\right\} ^{s}$
+\end_inset
+
+ and is parameterized by odd integers 
+\begin_inset Formula $a\in\left\{ 0,\ldots,2^{u}-1\right\} $
+\end_inset
+
+;
+ individual functions are given by 
+\begin_inset FormulaMacro
+\newcommand{\div}{\mathrm{\,div\,}}
+\end_inset
+
+
+\begin_inset Formula 
+\[
+h_{\alpha}\left(x\right)=\left(ax\mod{2^{u}}\right)\div2^{u-s}\,.
+\]
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Lemma
+\begin_inset CommandInset label
+LatexCommand label
+name "lem:oms-prob-limit"
+
+\end_inset
+
+For any distinct 
+\begin_inset Formula $x,y\in\left\{ 0,1\right\} ^{u}$
+\end_inset
+
+,
+ with 
+\begin_inset Formula $\alpha$
+\end_inset
+
+ drawn uniformly at random from the odd integers in 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u}-1\right\} $
+\end_inset
+
+,
+ we have the following two bounds:
+\begin_inset Formula 
+\begin{align*}
+\Pr_{a}\left[h_{a}\left(x\right)=h_{a}\left(y\right)\right] & \le\begin{cases}
+0 & \text{if }\left(x-y\mod{2^{u-s}}\right)=0\\
+1 & \text{otherwise}
+\end{cases}\\
+\Pr_{a}\left[h_{a}\left(x\right)=h_{a}\left(y\right)\right] & \le\Pr_{a}\left[a\left(x-y\right)\mod{2^{u}}\div2^{u-s}=0\right]
+\end{align*}
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Proof
+We have 
+\begin_inset Formula 
+\begin{align*}
+\Pr_{a}\left[h_{a}\left(x\right)=h_{a}\left(y\right)\right] & =\Pr_{a}\left[\left(ax\mod{2^{u}}\right)\mathrm{\div}2^{u-s}=\left(bx\mod{2^{u}}\right)\div2^{u-s}\right]
+\end{align*}
+
+\end_inset
+
+Let 
+\begin_inset Formula $i$
+\end_inset
+
+ be the largest integer for which 
+\begin_inset Formula $a\mod{2^{i}}=b\mod{2^{i}}$
+\end_inset
+
+.
+ Decompose 
+\begin_inset Formula $x=x_{h}2^{i}+c$
+\end_inset
+
+ and 
+\begin_inset Formula $y=y_{h}2^{i}+c$
+\end_inset
+
+ where 
+\begin_inset Formula $c=a\mod{2^{i}}=b\mod{2^{i}}$
+\end_inset
+
+.
+ If 
+\begin_inset Formula $i\ge u-s$
+\end_inset
+
+,
+ then 
+\begin_inset Formula 
+\begin{align*}
+\left(ax\mod{2^{u}}\right)\mathrm{\,div\,}2^{u-s} & =\left(ax_{h}2^{i}+ac\right)\mod{2^{u}}\mathrm{\div}2^{u-s}\\
+ & =\left(\left(\left(ax_{h}\mod{2^{u-i}}\right)2^{i}+\left(ac\mod{2^{u}}\right)\right)\mod{2^{u}}\right)\div2^{u-s}\\
+ & =\left(\left(ax_{h}\mod{2^{u-i}}\right)2^{i-\left(u-s\right)}+\left(ac\mod{2^{u}}\div2^{u-s}\right)\right)\mod{2^{u-s}}\\
+ & =\left(\left(ax_{h}\mod{2^{u-i}}\right)2^{i-\left(u-s\right)}+d\right)\mod{2^{u-s}}
+\end{align*}
+
+\end_inset
+
+where 
+\begin_inset Formula $d=\left(ac\mod{2^{u}}\div2^{u-s}\right)$
+\end_inset
+
+.
+ Since 
+\begin_inset Formula $a$
+\end_inset
+
+ is odd,
+ for 
+\begin_inset Formula $z\in\left\{ 0,\ldots2^{u-i}\right\} $
+\end_inset
+
+,
+ the map 
+\begin_inset Formula $z\rightarrow\left(az\mod{2^{u-i}}\right)$
+\end_inset
+
+ is a bijection;
+ and since 
+\begin_inset Formula $x_{h}\ne y_{h}$
+\end_inset
+
+,
+ it follows 
+\begin_inset Formula $h_{a}\left(x\right)\ne h_{a}\left(y\right)$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Proof
+On the other hand,
+ if 
+\begin_inset Formula $i<u-s$
+\end_inset
+
+,
+ then 
+\begin_inset Formula 
+\begin{align*}
+\Pr_{a} & \left[\left(ax\mod{2^{u}}\right)\div2^{u-s}=\left(ay\mod{2^{u}}\right)\div2^{u-s}\right]\\
+\le & \Pr_{a}\left[\left(\left(ax\mod{2^{u}}\right)-\left(ay\mod{2^{u}}\right)\right)\div2^{u-s}=0\right]\\
+ & +\Pr_{a}\left[\left(\left(bx\mod{2^{u}}\right)-\left(ay\mod{2^{u}}\right)\right)\div2^{u-s}=0\right]\\
+= & \Pr_{a}\left[\left(a\left(x-y\right)\mod{2^{u}}\right)\div2^{u-s}=0\right]\\
+ & +\Pr_{a}\left[\left(b\left(x-y\right)\mod{2^{u}}\right)\div2^{u-s}=0\right]
+\end{align*}
+
+\end_inset
+
+The first inequality follows since 
+\begin_inset Formula $w\div2^{u-s}=z\div2^{u-s}$
+\end_inset
+
+ implies both 
+\begin_inset Formula $w$
+\end_inset
+
+ and 
+\begin_inset Formula $z$
+\end_inset
+
+ lie in the same set 
+\begin_inset Formula $\left\{ 2^{u-s}k,\ldots,2^{u-s}\left(k+1\right)-1\right\} $
+\end_inset
+
+;
+ if 
+\begin_inset Formula $w\le z$
+\end_inset
+
+,
+ then 
+\begin_inset Formula $\left(z-w\right)\mod{2^{u}}<2^{u-s}$
+\end_inset
+
+ so 
+\begin_inset Formula $\left(z-w\right)\mod{2^{u}}\div2^{u-s}=0$
+\end_inset
+
+,
+ while if 
+\begin_inset Formula $w\ge z$
+\end_inset
+
+,
+ then 
+\begin_inset Formula $\left(w-z\right)\mod{2^{u}}\div2^{u-s}=0$
+\end_inset
+
+.
+ Note that 
+\begin_inset Formula $\left(x-y\right)\mod{2^{u}}=\left(\left(x_{h}-y_{h}\right)2^{i}\right)\mod{2^{u}}$
+\end_inset
+
+ and and 
+\begin_inset Formula $x_{h}-y_{h}\mod 2=1$
+\end_inset
+
+.
+ Multiplying by 
+\begin_inset Formula $x_{h}-y_{h}$
+\end_inset
+
+ under 
+\begin_inset Formula $\mod{2^{u-i}}$
+\end_inset
+
+ permutes odd values in 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u-i}-1\right\} $
+\end_inset
+
+,
+ so 
+\begin_inset Formula $\left(a\left(x_{h}-y_{h}\right)2^{i}\right)\mod{2^{u}}$
+\end_inset
+
+ is uniformly distributed over 
+\emph on
+odd
+\emph default
+ multiples of 
+\begin_inset Formula $2^{i}$
+\end_inset
+
+ in 
+\begin_inset Formula $2^{u}$
+\end_inset
+
+.
+ Since 
+\begin_inset Formula $i<u-s$
+\end_inset
+
+,
+ and 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u-s}\right\} $
+\end_inset
+
+ contains 
+\begin_inset Formula $2^{u-s-i-1}$
+\end_inset
+
+ odd multiples of 
+\begin_inset Formula $2^{i}$
+\end_inset
+
+ (out of 
+\begin_inset Formula $2^{u-i-1}$
+\end_inset
+
+ possible values).
+ 
+\begin_inset Formula 
+\[
+\Pr\left[\left(a\left(x-y\right)\mod{2^{u}}\right)\in\left\{ 0,\ldots,2^{u-s}\right\} \right]=\frac{1}{2^{s}}\,.
+\]
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Proof
+The 
+\begin_inset Formula $\Pr_{a}\left[h_{a}\left(x\right)=h_{a}\left(y\right)\right]\le\frac{1}{2^{s-1}}$
+\end_inset
+
+ upper bound is tight.
+ For example,
+ with 
+\begin_inset Formula $u=4,s=3$
+\end_inset
+
+,
+ 
+\begin_inset Formula $\Pr\left[h_{a}\left(1\right)=h_{a}\left(y\right)\right]=\frac{1}{4}$
+\end_inset
+
+ holds 
+\begin_inset Formula $y=3$
+\end_inset
+
+ and 
+\begin_inset Formula $y=11$
+\end_inset
+
+.
+ 
+\end_layout
+
+\begin_layout Note
+For comparison,
+ the upper bound from 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "raman95"
+literal "false"
+
+\end_inset
+
+ on 
+\begin_inset Formula $\Pr_{a}\left[h_{a}\left(x\right)=h_{a}\left(y\right)\right]$
+\end_inset
+
+ is 
+\begin_inset Formula 
+\[
+\Pr_{a}\left[a\left(x-y\right)\mod{2^{u}}\in\left\{ 0,\ldots2^{u-s}-1\right\} \cup\left\{ 2^{u}-2^{u-s}+1,\ldots2^{u-1}\right\} \right]
+\]
+
+\end_inset
+
+for which a 
+\begin_inset Formula $\le\frac{1}{2^{s-1}}$
+\end_inset
+
+ upper bound also holds.
+ The bound of Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:oms-prob-limit"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+ has the advantage of being slightly easier to compute in the incremental 
+\begin_inset Formula $a$
+\end_inset
+
+-finding hash construction approach of 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "raman95"
+literal "false"
+
+\end_inset
+
+.
+ Also,
+ either bound can be used to find that the expected number of collisions when uniformly randomly hashing an 
+\begin_inset Formula $n$
+\end_inset
+
+-element set 
+\begin_inset Formula $n$
+\end_inset
+
+ from 
+\begin_inset Formula $\left\{ 0,1\right\} ^{s}$
+\end_inset
+
+ to 
+\begin_inset Formula $\left\{ 0,1\right\} ^{b}$
+\end_inset
+
+ is 
+\begin_inset Formula $\le\frac{1}{2^{s-1}}\binom{n}{2}$
+\end_inset
+
+.
+ Consequently,
+ for a perfect hash function from 
+\begin_inset Formula $\mathcal{H}_{b,s}$
+\end_inset
+
+ to exist for all sets of size 
+\begin_inset Formula $n$
+\end_inset
+
+,
+ one needs 
+\begin_inset Formula $\frac{1}{2^{s-1}}\binom{n}{2}<1$
+\end_inset
+
+ which holds iff 
+\begin_inset Formula $s\ge\left\lceil \log\left(n\left(n-1\right)+1\right)\right\rceil $
+\end_inset
+
+.
+ 
+\end_layout
+
+\begin_layout Note
+However,
+ this is 
+\emph on
+not
+\emph default
+ a necessary condition,
+ and one can do slightly better in some cases.
+ When 
+\begin_inset Formula $n=1$
+\end_inset
+
+,
+ 
+\begin_inset Formula $2^{\left\lceil \log\left(n\left(n-1\right)+1\right)\right\rceil }=1$
+\end_inset
+
+,
+ but when 
+\begin_inset Formula $n=2$
+\end_inset
+
+,
+ 
+\begin_inset Formula $2^{\left\lceil \log\left(n\left(n-1\right)+1\right)\right\rceil }=4$
+\end_inset
+
+.
+ However,
+ given any 
+\begin_inset Formula $x,y\in\left\{ 0,1\right\} ^{u}$
+\end_inset
+
+,
+ let 
+\begin_inset Formula $j\in\left\{ 0,\ldots,u-1\right\} $
+\end_inset
+
+ be the highest bit for which 
+\begin_inset Formula $x_{j}\ne y_{j}$
+\end_inset
+
+.
+ If 
+\begin_inset Formula $j=u-1$
+\end_inset
+
+,
+ then 
+\begin_inset Formula $h_{1}\left(x\right)=x_{j}\ne y_{j}=h_{1}\left(y\right)$
+\end_inset
+
+ and choosing 
+\begin_inset Formula $a=1$
+\end_inset
+
+ separates the two.
+ Otherwise,
+ let 
+\begin_inset Formula $a=2^{u-1-j}$
+\end_inset
+
+ (which is admittedly 
+\emph on
+even
+\emph default
+);
+ then 
+\begin_inset Formula $ax=2^{u-1-j}x+x$
+\end_inset
+
+;
+ the multiplication does not overflow 
+\begin_inset Formula $2^{u}$
+\end_inset
+
+ so 
+\begin_inset Formula $ax\div2^{u-1}=x_{j}$
+\end_inset
+
+,
+ and similarly 
+\begin_inset Formula $ay\div2^{u-1}=y_{j}$
+\end_inset
+
+,
+ so 
+\begin_inset Formula $h_{a}\left(x\right)\ne h_{a}\left(y\right)$
+\end_inset
+
+.
+ Thus a perfect hash function for 
+\begin_inset Formula $n=2$
+\end_inset
+
+ with 
+\begin_inset Formula $s=1$
+\end_inset
+
+ always exists.
+ It 
+\emph on
+may
+\emph default
+ be possible that similar minimal perfect hashing can be done with odd multiply-shift hashes for 
+\begin_inset Formula $n=2,3,4,\ldots$
+\end_inset
+
+ up to some small set size threshold,
+ although space lower bounds imply the threshold is at most 
+\begin_inset Formula $O\left(\log u\right)$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Definition
+A hash function 
+\begin_inset Formula $h$
+\end_inset
+
+ from 
+\begin_inset Formula $A$
+\end_inset
+
+ to 
+\begin_inset Formula $B$
+\end_inset
+
+ is 
+\begin_inset Formula $c$
+\end_inset
+
+-colliding on a set 
+\begin_inset Formula $S\subseteq A$
+\end_inset
+
+ of size 
+\begin_inset Formula $n$
+\end_inset
+
+ if 
+\begin_inset Formula $\sum_{\left\{ x,y\right\} \in\binom{S}{2}}1_{h\left(x\right)=h\left(y\right)}\le c$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Lemma
+Say that 
+\begin_inset Formula $h:A\rightarrow B$
+\end_inset
+
+ is 
+\begin_inset Formula $c$
+\end_inset
+
+-colliding on the set 
+\begin_inset Formula $S$
+\end_inset
+
+ .
+ Let 
+\begin_inset Formula $b_{1},\ldots,b_{k}$
+\end_inset
+
+ be the sizes of the equivalence classes of 
+\begin_inset Formula $S$
+\end_inset
+
+ under 
+\begin_inset Formula $h$
+\end_inset
+
+,
+ so that 
+\begin_inset Formula $\sum_{i}b_{i}=n=\left|S\right|$
+\end_inset
+
+ and 
+\begin_inset Formula $\sum_{i}\binom{b_{i}}{2}\le c$
+\end_inset
+
+.
+ Let 
+\begin_inset Formula 
+\[
+s\left(b\right)=\begin{cases}
+b & \text{if }b\le2\\
+2^{\left\lceil \log\left(b_{i}\left(b_{i}-1\right)+1\right)\right\rceil } & \text{if \ensuremath{b\ge3}}
+\end{cases}
+\]
+
+\end_inset
+
+Then 
+\begin_inset Formula 
+\begin{align*}
+\sum_{i}s\left(b_{i}\right) & <n+4c\\
+\max\left(n,\sum_{b_{i}\ge2}s\left(b_{i}\right)\right) & \le\max\left(n,4c\right)
+\end{align*}
+
+\end_inset
+
+(These give bounds on the total output sizes for the FKS two-level hashing scheme (
+\begin_inset CommandInset citation
+LatexCommand cite
+key "fks84"
+literal "false"
+
+\end_inset
+
+) if placing leaf hash tables disjointly using offset values,
+ and if packing size-1 tables into the gaps of the other tables.
+ Size 
+\begin_inset Formula $2$
+\end_inset
+
+-tables are also contiguous,
+ so one may be able to pack those into the 
+\begin_inset Formula $\max\left(\frac{1}{2}s\left(b\right)-b,0\right)$
+\end_inset
+
+ gaps of length 
+\begin_inset Formula $2$
+\end_inset
+
+ left when hashing 
+\begin_inset Formula $b$
+\end_inset
+
+-sized equivalence classes;
+ to what extent this works depends on the exact equivalence class size distribution.)
+\end_layout
+
+\begin_layout Proof
+Let 
+\begin_inset Formula $r\left(b\right)=\frac{s\left(b\right)}{b\left(b-1\right)/2}$
+\end_inset
+
+ (i.e,
+ the ratio of table size to collision count for an equivalence class).
+ We have 
+\begin_inset Formula $r\left(1\right)=\infty$
+\end_inset
+
+,
+ 
+\begin_inset Formula $r\left(2\right)=2$
+\end_inset
+
+,
+ 
+\begin_inset Formula $r\left(3\right)=r\left(4\right)=\frac{8}{3}$
+\end_inset
+
+,
+ 
+\begin_inset Formula $r\left(5\right)=\frac{16}{5}$
+\end_inset
+
+,
+ and 
+\begin_inset Formula $\sup_{b\ge6}r\left(b\right)=4$
+\end_inset
+
+ (although 
+\emph on
+exactly
+\emph default
+ 4 is never reached;
+ as 
+\begin_inset Formula $b\rightarrow\infty$
+\end_inset
+
+,
+ 
+\begin_inset Formula $r\left(b\right)$
+\end_inset
+
+ oscillates between 
+\begin_inset Formula $2$
+\end_inset
+
+ and 
+\begin_inset Formula $4$
+\end_inset
+
+ depending on how much the 
+\begin_inset Formula $\left\lceil \cdot\right\rceil $
+\end_inset
+
+ operation in 
+\begin_inset Formula $s\left(b\right)$
+\end_inset
+
+ adds.)
+\begin_inset Formula 
+\[
+\sum_{b_{i}\ge2}s\left(b_{i}\right)<4\sum_{b_{i}\ge2}\frac{b_{i}\left(b_{i}-1\right)}{2}\le4c
+\]
+
+\end_inset
+
+Since 
+\begin_inset Formula $s\left(1\right)=1$
+\end_inset
+
+,
+ 
+\begin_inset Formula $\sum_{b_{i}=1}s\left(b_{i}\right)=\left|\left\{ i:b_{i}=1\right\} \right|\le n$
+\end_inset
+
+,
+ so
+\begin_inset Formula 
+\[
+\sum_{i}s\left(b_{i}\right)=\sum_{b_{i}=1}s\left(b_{i}\right)+\sum_{b_{i}=2}s\left(b_{i}\right)\le n+4c
+\]
+
+\end_inset
+
+(This is roughly tight;
+ if all collisions are concentrated in a single equivalence class of size 
+\begin_inset Formula $d=O\left(\sqrt{c}\right)$
+\end_inset
+
+,
+ then the large class will contribute 
+\begin_inset Formula $s\left(d\right)=\Theta\left(c\right)$
+\end_inset
+
+ while the small ones add 
+\begin_inset Formula $n-d$
+\end_inset
+
+ for the singleton equivalence classes.
+\end_layout
+
+\begin_layout Remark
+If the FKS hashing scheme (
+\begin_inset CommandInset citation
+LatexCommand cite
+key "fks84"
+literal "false"
+
+\end_inset
+
+) is implemented using OMS hashing (Definition 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "def:odd-multiply-shift"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+) ,
+ with hash functions picked to have a sub-average number of collisions,
+ using size-2 leaf tables for size-2 leaves,
+ tightly packing size-1 sub-tables in the free space of leaf tables,
+ using 
+\begin_inset Formula $\alpha$
+\end_inset
+
+ and 
+\begin_inset Formula $\beta$
+\end_inset
+
+ bits per primary and secondary table entries,
+ and with main hash output bit count 
+\begin_inset Formula $s$
+\end_inset
+
+,
+ the total space usage is 
+\begin_inset Formula 
+\[
+\alpha2^{s}+\beta\max\left(n,\frac{4}{2^{s-1}}\binom{n}{2}\right)
+\]
+
+\end_inset
+
+which is minimized when
+\begin_inset Formula 
+\[
+s=\min\left(\left\lceil \log\left(n-1\right)\right\rceil ,\left\lceil \frac{1}{2}\log\left(\frac{4\beta\binom{n}{2}}{\alpha}\right)\right\rceil \right)
+\]
+
+\end_inset
+
+(Choosing 
+\begin_inset Formula $s=\left\lceil \frac{1}{2}\log\left(\frac{x}{2}\right)\right\rceil $
+\end_inset
+
+ minimizes 
+\begin_inset Formula $2^{s}+\frac{x}{2^{s}}$
+\end_inset
+
+ with value 
+\begin_inset Formula $\le\frac{3}{\sqrt{2}}\sqrt{x}$
+\end_inset
+
+,
+ so the total space usage for the table is 
+\begin_inset Formula $\le\max\left(\frac{6\sqrt{\beta\alpha}}{\sqrt{2}}n,\beta n+2\alpha n\right)$
+\end_inset
+
+.)
+\end_layout
+
 \begin_layout Bibliography
 \begin_inset CommandInset bibitem
 LatexCommand bibitem
+label "fks84"
+key "fks84"
+literal "false"
+
+\end_inset
+
+ Fredman,
+ Komlós,
+ Szemerédi,
+ 
+\begin_inset Quotes eld
+\end_inset
+
+Storing a Sparse Table with O(1) Worst-case Access Time
+\begin_inset Quotes erd
+\end_inset
+
+,
+ 1984.
+ 
+\begin_inset Flex URL
+status collapsed
+
+\begin_layout Plain Layout
+
+https://doi.org/10.1145/828.1884
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Bibliography
+\begin_inset CommandInset bibitem
+LatexCommand bibitem
+label "hmp01"
 key "hmp01"
 literal "false"
 
@@ -837,6 +1724,57 @@ https://doi.org/10.1006/jagm.2001.1171
 \end_inset
 
 .
+\end_layout
+
+\begin_layout Bibliography
+\begin_inset CommandInset bibitem
+LatexCommand bibitem
+label "r95"
+key "raman95"
+literal "false"
+
+\end_inset
+
+ Raman,
+ 
+\begin_inset Quotes eld
+\end_inset
+
+Improved data structures for predecessor queries in integer sets
+\begin_inset Quotes erd
+\end_inset
+
+,
+ 1995,
+ technical report.
+\end_layout
+
+\begin_layout Bibliography
+\begin_inset CommandInset bibitem
+LatexCommand bibitem
+label "dhkp97"
+key "dhkp97"
+literal "false"
+
+\end_inset
+
+Dietzfelbinger,
+ Hagerup,
+ Katajainen,
+ Penttonen,
+ 1997,
+ 
+\begin_inset Flex URL
+status collapsed
+
+\begin_layout Plain Layout
+
+https://doi.org/10.1006/jagm.1997.0873
+\end_layout
+
+\end_inset
+
+
 \end_layout
 
 \end_body

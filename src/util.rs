@@ -1,6 +1,26 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 use crate::Dict;
 
+/** A saturating right shift returns zero if the shift amount overflows the number of bits */
+#[inline(always)]
+pub fn saturating_shr(a: u64, v: u32) -> u64 {
+    if v >= u64::BITS {
+        0
+    } else {
+        a >> v
+    }
+}
+#[inline(always)]
+pub fn mask_for_ubits(ubits: u32) -> u64 {
+    if ubits == u64::BITS {
+        u64::MAX
+    } else if ubits > u64::BITS {
+        panic!()
+    } else {
+        (1 << ubits) - 1
+    }
+}
+
 /** A (weak) pseudo-random permutation indexed by 'seed', mapping `i` to a unique value in [0..n)  */
 fn random_permute(i: u64, n: u64, seed: u64) -> u64 {
     // TODO: replace with something better; can probably afford cryptographic quality + high space
