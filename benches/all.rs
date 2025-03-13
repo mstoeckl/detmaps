@@ -110,7 +110,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 bench_group::<HagerupMP01Dict>(bits, &mut group, "hmp01", pattern, *patfn);
             }
             if bits <= 25 {
-                bench_group::<HMP01UnreducedDict>(bits, &mut group, "hmp01u", pattern, *patfn);
+                bench_group::<HMP01UnreducedDict>(bits, &mut group, "iter+hmp01", pattern, *patfn);
             }
             if bits <= 22 {
                 bench_group::<R09BxHMP01Dict>(bits, &mut group, "r09b+hmp01", pattern, *patfn);
@@ -119,10 +119,13 @@ fn criterion_benchmark(c: &mut Criterion) {
                 bench_group::<XorReducedDict>(bits, &mut group, "xor+hmp01", pattern, *patfn);
             }
             if bits <= 22 {
-                bench_group::<FRxHMP01Dict>(bits, &mut group, "fr+hmp01", pattern, *patfn);
+                bench_group::<OMSxHMP01Dict>(bits, &mut group, "oms+hmp01", pattern, *patfn);
             }
             if bits <= 22 {
-                bench_group::<FRxFKSDict>(bits, &mut group, "fr+fks", pattern, *patfn);
+                bench_group::<OMSxFKSDict>(bits, &mut group, "oms+fks", pattern, *patfn);
+            }
+            if bits <= 22 {
+                bench_group::<OMSxDispDict>(bits, &mut group, "oms+disp", pattern, *patfn);
             }
             if bits <= 25 {
                 bench_group::<Ruzic09Dict>(bits, &mut group, "r09a", pattern, *patfn);

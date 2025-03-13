@@ -4,61 +4,34 @@
 use detmaps::*;
 use std::time::Instant;
 
-#[inline(never)]
-fn do_virt_queries(dict: &GenericDict, queries: &[u64]) {
-    let mut x = 0;
-    for q in queries.iter() {
-        x += dict.query(*q).unwrap();
-    }
-    std::hint::black_box(x);
+struct DictTrialImpl<H> {
+    dict: H,
 }
-
-enum GenericDict {
-    Binsearch(BinSearchDict<u64, u64>),
-    BTree(BTreeDict<u64, u64>),
-    Hash(HashDict<u64, u64>),
-    HMP01(HagerupMP01Dict),
-    HMP01u(HMP01UnreducedDict),
-    R09BxHMP01(R09BxHMP01Dict),
-    XorxHMP01(XorReducedDict),
-    FrxHMP01(FRxHMP01Dict),
-    R09a(Ruzic09Dict),
+trait DictTrial {
+    fn new(data: &[(u64, u64)], u_bits: u32) -> Box<dyn DictTrial>
+    where
+        Self: Sized;
+    fn test_par(&self, data: &[u64]);
+    // todo: add test_chain, with number of steps to run for
 }
-impl GenericDict {
-    fn new_typed(data: &[(u64, u64)], tp: &str) -> Self {
-        match tp {
-            "binsearch" => Self::Binsearch(BinSearchDict::new(data)),
-            "btree" => Self::BTree(BTreeDict::new(data)),
-            "hash" => Self::Hash(HashDict::new(data)),
-            "hmp01" => Self::HMP01(HagerupMP01Dict::new(data)),
-            "hmp01u" => Self::HMP01u(HMP01UnreducedDict::new(data)),
-            "r09b+hmp01" => Self::R09BxHMP01(R09BxHMP01Dict::new(data)),
-            "xor+hmp01" => Self::XorxHMP01(XorReducedDict::new(data)),
-            "fr+hmp01" => Self::FrxHMP01(FRxHMP01Dict::new(data)),
-            "r09a" => Self::R09a(Ruzic09Dict::new(data)),
-            _ => panic!("Unknown dict type: {}", tp),
-        }
+impl<H> DictTrial for DictTrialImpl<H>
+where
+    H: Dict<u64, u64> + 'static,
+{
+    fn new(data: &[(u64, u64)], u_bits: u32) -> Box<dyn DictTrial>
+    where
+        Self: Sized,
+    {
+        assert!(u_bits == u64::BITS);
+        Box::new(DictTrialImpl { dict: H::new(data) })
     }
-}
-impl Dict<u64, u64> for GenericDict {
-    fn new(_data: &[(u64, u64)]) -> Self {
-        unimplemented!();
-    }
-    // note: Box<dyn > may be more useful as optimizers might lift unnecessary calculations
     #[inline(never)]
-    fn query(&self, key: u64) -> Option<u64> {
-        // TODO: any way to replace the 'switch' with function pointers? unsafe casts are OK
-        match self {
-            Self::Binsearch(ref v) => v.query(key),
-            Self::BTree(ref v) => v.query(key),
-            Self::Hash(ref v) => v.query(key),
-            Self::HMP01(ref v) => v.query(key),
-            Self::HMP01u(ref v) => v.query(key),
-            Self::R09BxHMP01(ref v) => v.query(key),
-            Self::XorxHMP01(ref v) => v.query(key),
-            Self::FrxHMP01(ref v) => v.query(key),
-            Self::R09a(ref v) => v.query(key),
+    fn test_par(&self, queries: &[u64]) {
+        let mut x = 0;
+        for q in queries.iter() {
+            x += self.dict.query(*q).unwrap();
         }
+        std::hint::black_box(x);
     }
 }
 
@@ -79,9 +52,26 @@ fn main() {
     let queries: Vec<u64> = std::hint::black_box(data.iter().map(|x| x.0).collect());
     let t0 = Instant::now();
 
-    let dict = std::hint::black_box(GenericDict::new_typed(&data, dict_type));
+    let u_bits = u64::BITS;
+
+    let dict = match dict_type {
+        "binsearch" => DictTrialImpl::<BinSearchDict<u64, u64>>::new(&data, u_bits),
+        "btree" => DictTrialImpl::<BTreeDict<u64, u64>>::new(&data, u_bits),
+        "hash" => DictTrialImpl::<HashDict<u64, u64>>::new(&data, u_bits),
+        "hmp01" => DictTrialImpl::<HagerupMP01Dict>::new(&data, u_bits),
+        "iter+hmp01" => DictTrialImpl::<HMP01UnreducedDict>::new(&data, u_bits),
+        "r09b+hmp01" => DictTrialImpl::<R09BxHMP01Dict>::new(&data, u_bits),
+        "xor+hmp01" => DictTrialImpl::<XorReducedDict>::new(&data, u_bits),
+        "oms+hmp01" => DictTrialImpl::<OMSxHMP01Dict>::new(&data, u_bits),
+        "oms+fks" => DictTrialImpl::<OMSxFKSDict>::new(&data, u_bits),
+        "r09a" => DictTrialImpl::<Ruzic09Dict>::new(&data, u_bits),
+        _ => panic!(),
+    };
+
     let t1 = Instant::now();
-    do_virt_queries(&dict, &queries);
+
+    dict.test_par(&queries);
+
     let t2 = Instant::now();
     println!(
         "type: {} size: {}; construction time: {} secs; query time: {} secs",

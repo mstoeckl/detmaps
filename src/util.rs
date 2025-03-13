@@ -1,5 +1,9 @@
+use std::collections::BTreeSet;
+
 /* SPDX-License-Identifier: MPL-2.0 */
 use crate::Dict;
+use rand::{seq::SliceRandom, Rng, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 
 /** A saturating right shift returns zero if the shift amount overflows the number of bits */
 #[inline(always)]
@@ -25,6 +29,9 @@ pub fn mask_for_ubits(ubits: u32) -> u64 {
 fn random_permute(i: u64, n: u64, seed: u64) -> u64 {
     // TODO: replace with something better; can probably afford cryptographic quality + high space
     // overhead, since this is only used to set up dictionary values, although evaluation should be fast
+
+    // TODO: this is an odd-multiply-mod construction, and it is not obvious that this does not interact weirdly with odd-multiply-shift hashing
+
     assert!(n.is_power_of_two());
     let p = (seed.wrapping_mul(0x9e3779b97f4a7c16)) | 0x1;
     ((i as u128 * p as u128 + seed as u128) % (n as u128)) as u64
@@ -39,18 +46,29 @@ fn ith_random_sampled_32(i: u64, seed: u64) -> u64 {
 /** Return a (k,v) sequence with the property that, following the k->v=k->v=k->v ...
  * chain from k[0] will eventually cycle back and report k[0] */
 pub fn make_random_chain_32(n: u64, seed_vals: u64, seed_order: u64) -> Vec<(u64, u64)> {
-    assert!(n.is_power_of_two());
+    let mut rng_vals = ChaCha12Rng::seed_from_u64(seed_vals);
+    let mut rng_order = ChaCha12Rng::seed_from_u64(seed_order);
 
-    (0..n)
-        .map(|x| {
-            let i1 = random_permute(x, n, seed_order);
-            let i2 = random_permute((x + 1) % n, n, seed_order);
-
-            let k = ith_random_sampled_32(i1, seed_vals);
-            let v = ith_random_sampled_32(i2, seed_vals);
-            (k, v)
-        })
-        .collect()
+    // note: rand's index::sample works for u32, but requires allocation and does not
+    // work for integer types >= usize.
+    // TODO: implement the near linear-time, zero overhead, sorted subset sampling algorithm
+    // Another approach would be to use a switching/shuffling network, but they are often slow
+    assert!(n <= (u32::MAX / 2) as u64); /* algorithm is only somewhat fast when sample size is <=1/2 universe */
+    let mut s = BTreeSet::<u64>::new();
+    while s.len() < n as usize {
+        let x = rng_vals.random_range(0..=(u32::MAX as u64));
+        s.insert(x);
+    }
+    let mut v: Vec<u64> = s.into_iter().collect();
+    v.shuffle(&mut rng_order);
+    let mut chain: Vec<(u64, u64)> = Vec::new();
+    let wrap_pair = (*v.last().unwrap(), *v.first().unwrap());
+    chain.push(wrap_pair);
+    for w in v.windows(2) {
+        chain.push((w[0], w[1]));
+    }
+    chain.shuffle(&mut rng_order);
+    chain
 }
 
 fn ith_random_sampled_64(i: u64, seed: u64) -> u64 {
@@ -62,18 +80,29 @@ fn ith_random_sampled_64(i: u64, seed: u64) -> u64 {
 /** Return a (k,v) sequence with the property that, following the k->v=k->v=k->v ...
  * chain from k[0] will eventually cycle back and report k[0] */
 pub fn make_random_chain_64(n: u64, seed_vals: u64, seed_order: u64) -> Vec<(u64, u64)> {
-    assert!(n.is_power_of_two());
+    let mut rng_vals = ChaCha12Rng::seed_from_u64(seed_vals);
+    let mut rng_order = ChaCha12Rng::seed_from_u64(seed_order);
 
-    (0..n)
-        .map(|x| {
-            let i1 = random_permute(x, n, seed_order);
-            let i2 = random_permute((x + 1) % n, n, seed_order);
-
-            let k = ith_random_sampled_64(i1, seed_vals);
-            let v = ith_random_sampled_64(i2, seed_vals);
-            (k, v)
-        })
-        .collect()
+    // note: rand's index::sample works for u32, but requires allocation and does not
+    // work for integer types >= usize.
+    // TODO: implement the near linear-time, zero overhead, sorted subset sampling algorithm
+    // Another approach would be to use a switching/shuffling network, but they are often slow
+    assert!(n <= (u64::MAX / 2) as u64); /* algorithm is only somewhat fast when sample size is <=1/2 universe */
+    let mut s = BTreeSet::<u64>::new();
+    while s.len() < n as usize {
+        let x = rng_vals.random_range(0..=(u64::MAX as u64));
+        s.insert(x);
+    }
+    let mut v: Vec<u64> = s.into_iter().collect();
+    v.shuffle(&mut rng_order);
+    let mut chain: Vec<(u64, u64)> = Vec::new();
+    let wrap_pair = (*v.last().unwrap(), *v.first().unwrap());
+    chain.push(wrap_pair);
+    for w in v.windows(2) {
+        chain.push((w[0], w[1]));
+    }
+    chain.shuffle(&mut rng_order);
+    chain
 }
 
 #[test]

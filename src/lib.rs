@@ -408,10 +408,13 @@ struct HMPQuadHash {
  * Also: the second displacement round _should_ always find slots which previously
  * had weight zero; it may be possible to find a better data structure for this
  * special case. (Note: Ružić09 appears to have dealt with a similar problem.)
+ *
+ * The input can be viewed as pair (f,g), where `f` has t bit values and
+ * `g` has r bit values.
  */
 #[inline(never)]
-fn compute_displacement(input: &[(u64, u64)], r: u32) -> Vec<u64> {
-    let mut bucket_sizes = vec![0_u64; 1 << r];
+fn compute_displacement(input: &[(u64, u64)], t: u32, r: u32) -> Vec<u64> {
+    let mut bucket_sizes = vec![0_u64; 1 << t];
     for (f, _g) in input {
         bucket_sizes[*f as usize] += 1;
     }
@@ -529,17 +532,18 @@ impl HMPQuadHash {
     fn new(keys: &[(u64, u64)], r_bits: u32) -> HMPQuadHash {
         // Ensure r_bits <= 63 to avoid weird edge cases
         assert!(r_bits <= 64 - 4);
-        assert!(2 * keys.len() <= (1 << r_bits));
+        // TODO: the threshold should be 'sqrt(2)*keys.len()' instead of `2*keys.len()`
+        assert!(next_log_power_of_two(2 * keys.len()) <= (1 << r_bits));
         for (f, g) in keys {
             assert!(f >> r_bits == 0);
             assert!(g >> r_bits == 0);
         }
-        let disp_0 = compute_displacement(keys, r_bits);
+        let disp_0 = compute_displacement(keys, r_bits, r_bits);
         let disp_keys: Vec<(u64, u64)> = keys
             .iter()
             .map(|(f, g)| (*g ^ disp_0[*f as usize], *f))
             .collect();
-        let disp_1 = compute_displacement(&disp_keys, r_bits);
+        let disp_1 = compute_displacement(&disp_keys, r_bits, r_bits);
 
         HMPQuadHash {
             r_bits,
@@ -560,7 +564,7 @@ fn test_hmp01_displacement() {
     // r=n=17 is a slightly out of spec, but the algorithm _should_ still place each element in an empty slot
     let r_bits = 17;
     let x: Vec<(u64, u64)> = (0..((1 << 17) as u64)).map(|x| (x, x)).collect();
-    let disp = compute_displacement(&x, r_bits);
+    let disp = compute_displacement(&x, r_bits, r_bits);
     let mut freqs = vec![0_usize; 1 << r_bits];
     for (f, g) in x {
         let (u, _v) = (g ^ disp[f as usize], f);
@@ -2680,17 +2684,6 @@ fn test_raman95_hash() {
     test_perfect_hash::<Raman95Hash>();
 }
 
-/** A variant of the Raman96 hash construction with a slightly more memory intensive
- * but possibly slightly faster (but still quadratic time) construction; this may scale
- * better to larger universes, and have a _slightly_ smaller output space, but requires
- * finite field operations. May be practical for [u256]->[u16] hashing. */
-struct IterMulHash {
-    u_bits: u32,
-    step_bits: u32,
-    factors: Vec<u64>,
-    p: u64,
-}
-
 /** Same as [Raman95Hash], but hopefully with faster construction. */
 // using a separate type
 pub struct FastOMS(MultiplyShiftHash);
@@ -2785,6 +2778,7 @@ fn build_oms_opt_aux(keys: &[u64]) -> OmsOptAux {
 
 /** Like compute_delta() of the original Raman95 construction, except only checking for extensions that map
  * the difference to [0..2^{u-o}). (The other direction will be handled when this is called with ax/ay reversed.) */
+#[cfg(test)]
 fn compute_delta_mod(ax: u64, ay: u64, alpha_bits: u32, u_bits: u32, output_bits: u32) -> u64 {
     assert!(ax != ay && u_bits == 64);
     let diff = ax.wrapping_sub(ay);
@@ -2925,6 +2919,58 @@ fn compute_oms_batch_ring_count(
     gap: u64,
     mod_mask: u64,
 ) -> u128 {
+    let all_r_equal = sorted_r.windows(2).all(|x| x[0] == x[1]);
+    if all_r_equal {
+        /* Special case: all values are equal. (The two-pointer scanning approach uses when
+         * values are not all equal does not work here.) */
+        let mut count = 0u64;
+        let kr = *sorted_r.first().unwrap();
+        for kl in sorted_l.iter() {
+            count = count.wrapping_add(((kl.wrapping_sub(kr) & mod_mask) < gap) as u64);
+        }
+        return (count as u128) * (sorted_r.len() as u128);
+    }
+
+    /* Main case: there are at least two distinct values, so a pointer scan works.
+     *
+     * Note: a two pointer scan approach is complicated by wraparound; see
+     * examples showing how the desired region, marked with x, could evolve.
+     *
+     * xx-------xx
+     * ---xxxx----
+     * ----xxxx---
+     * -----xxxx--
+     *
+     * -----xxxxxx
+     * xxxxxxxxxxx
+     * xxxxx------
+     * -----------
+     *
+     * Target pairs are those for which: `(kl.wrapping_sub(*kr) & mod_mask) < gap`.
+     * (So roughly, want to track all `kr` in (kl - gap, kl] mod m ).
+     *
+     * Since sorted_r is increasing, (kl-sorted_r) is _decreasing_; the smallest
+     * value is on the right end, and the largest on the left. When kl increases,
+     * `kl-sorted_r` increases and the region in [0,gap) moves rightwards.
+     *
+     * ---------
+     *      xx
+     *        x
+     * xx      x
+     *   xx
+     *     x
+     * ---------
+     *
+     * Right index: rightmost and "smallest" value of `kl-kr`.
+     * (i.e, boundary where kl - kr >= 0.)
+     *
+     * Left index: leftmost and "largest" value of `kl - kr - gap`.
+     * (i.e, boundary where kl - kr < gap, a.k.a. `kl - kr - gap < 0`)
+     *
+     * When: left = right+1, there are either no valid `kr` values matching `kl`,
+     * or all values match.
+     */
+
     let mut brute_count = 0u128;
     if false {
         // TODO: brute force to start with
@@ -2941,185 +2987,148 @@ fn compute_oms_batch_ring_count(
 
     let mut count = 0u128;
 
-    let all_r_equal = sorted_r.windows(2).all(|x| x[0] == x[1]);
-    if all_r_equal {
-        /* Special case, all values are equal, efficiently computable. (The two-pointer scanning
-         * approach uses when values are not all equal does not work here.) */
-        let kr = *sorted_r.first().unwrap();
-        for kl in sorted_l.iter() {
-            if (kl.wrapping_sub(kr) & mod_mask) < gap {
-                count += sorted_r.len() as u128;
+    let first_kl = *sorted_l.first().unwrap();
+
+    fn get_right_pos(kl: u64, sorted_r: &[u64], mod_mask: u64) -> usize {
+        // NOTE: above some size threshold, could use (a variant of) binary search instead
+        // (but get_left_pos/get_right_pos take only ~20% of batch-ring count time)
+        let mut right = 0;
+        let mut min_diff = mod_mask; /* any value >= mod_mask is OK for initial value */
+        let mut next_value = sorted_r[0];
+        for (i, val) in sorted_r.iter().enumerate().rev() {
+            if *val == next_value {
+                /* Not a candidate for a rightmost extremum in a circularly sorted list */
+                continue;
+            }
+            next_value = *val;
+
+            let d = kl.wrapping_sub(*val) & mod_mask;
+            if d <= min_diff {
+                right = i;
+                min_diff = d;
             }
         }
-    } else {
-        /* Case: there are at least two distinct values, so a pointer scan works.
-         *
-         * Note: a two pointer scan approach is complicated by wraparound; see
-         * examples showing how the desired region, marked with x, could evolve.
-         *
-         * xx-------xx
-         * ---xxxx----
-         * ----xxxx---
-         * -----xxxx--
-         *
-         * -----xxxxxx
-         * xxxxxxxxxxx
-         * xxxxx------
-         * -----------
-         *
-         * Target pairs are those for which: `(kl.wrapping_sub(*kr) & mod_mask) < gap`.
-         * (So roughly, want to track all `kr` in (kl - gap, kl] mod m ).
-         *
-         * Since sorted_r is increasing, (kl-sorted_r) is _decreasing_; the smallest
-         * value is on the right end, and the largest on the left. When kl increases,
-         * `kl-sorted_r` increases and the region in [0,gap) moves rightwards.
-         *
-         * ---------
-         *      xx
-         *        x
-         * xx      x
-         *   xx
-         *     x
-         * ---------
-         *
-         * Right index: rightmost and "smallest" value of `kl-kr`.
-         * (i.e, boundary where kl - kr >= 0.)
-         *
-         * Left index: leftmost and "largest" value of `kl - kr - gap`.
-         * (i.e, boundary where kl - kr < gap, a.k.a. `kl - kr - gap < 0`)
-         *
-         * When: left = right+1, there are no valid `kr` values matching `kl`.
-         */
-        let first_kl = *sorted_l.first().unwrap();
+        right
+    }
 
-        fn get_right_pos(kl: u64, sorted_r: &[u64], mod_mask: u64) -> usize {
-            let mut right = 0;
-            let mut min_diff = mod_mask; /* any value >= mod_mask is OK for initial value */
-            for i in 0..sorted_r.len() {
-                if sorted_r[i] == sorted_r[(i + 1) % sorted_r.len()] {
-                    /* Not a candidate for a rightmost extremum in a circularly sorted list */
-                    continue;
-                }
-                let d = kl.wrapping_sub(sorted_r[i]) & mod_mask;
-                if d <= min_diff {
-                    right = i;
-                    min_diff = d;
-                }
+    fn get_left_pos(kl: u64, sorted_r: &[u64], gap: u64, mod_mask: u64) -> usize {
+        let mut left = 0;
+        let mut max_gap_diff = 0;
+        let mut prev_value = *sorted_r.last().unwrap();
+        for (i, val) in sorted_r.iter().enumerate() {
+            if *val == prev_value {
+                /* Not a candidate for a leftmost extremum in a circularly sorted list */
+                continue;
             }
-            right
+            prev_value = *val;
+            let d = kl.wrapping_sub(*val).wrapping_sub(gap) & mod_mask;
+            if d >= max_gap_diff {
+                left = i;
+                max_gap_diff = d;
+            }
+        }
+        left
+    }
+
+    fn next_mod(val: usize, len: usize) -> usize {
+        if val >= len - 1 {
+            0
+        } else {
+            val + 1
+        }
+    }
+
+    let mut left = get_left_pos(first_kl, &sorted_r, gap, mod_mask);
+    let mut right = get_right_pos(first_kl, &sorted_r, mod_mask);
+
+    let mut prev_left_value = sorted_r[(left + sorted_r.len() - 1) % sorted_r.len()];
+
+    /* Note: on the first iteration, right and left pointers should not move */
+    for kl in sorted_l.iter() {
+        /* Update pointer positions for new (nondecreased) kl. For the right pointer,
+         * as it minimizes, it is enough to move it right as long as that reduces the value */
+        while (kl.wrapping_sub(sorted_r[next_mod(right, sorted_r.len())]) & mod_mask)
+            <= (kl.wrapping_sub(sorted_r[right]) & mod_mask)
+        {
+            // println!("advance right");
+            right = next_mod(right, sorted_r.len());
+        }
+        /* The left pointer maximizes a quantity, so the naive way to find that would be to iterate
+         * in order of increasing values (leftwards), which is inefficient. Instead, move right _to
+         * the next distinct value_ while the position to the left has a strictly larger quantity. */
+        while (kl.wrapping_sub(prev_left_value).wrapping_sub(gap) & mod_mask)
+            > (kl.wrapping_sub(sorted_r[left]).wrapping_sub(gap) & mod_mask)
+        {
+            // println!(
+            //     "advance left: {} {}",
+            //     (kl.wrapping_sub(
+            //         sorted_r[(left + sorted_r.len() - 1) % sorted_r.len()]
+            //     )
+            //     .wrapping_sub(gap)
+            //         & mod_mask),
+            //     (kl.wrapping_sub(sorted_r[left]).wrapping_sub(gap) & mod_mask)
+            // );
+
+            let cval = sorted_r[left];
+            while sorted_r[left] == cval {
+                prev_left_value = sorted_r[left];
+                left = next_mod(left, sorted_r.len());
+            }
         }
 
-        fn get_left_pos(kl: u64, sorted_r: &[u64], gap: u64, mod_mask: u64) -> usize {
-            let mut left = 0;
-            let mut max_gap_diff = 0;
-            for i in 0..sorted_r.len() {
-                if sorted_r[i] == sorted_r[(i + sorted_r.len() - 1) % sorted_r.len()] {
-                    /* Not a candidate for a leftmost extremum in a circularly sorted list */
-                    continue;
-                }
-                let d = kl.wrapping_sub(sorted_r[i]).wrapping_sub(gap) & mod_mask;
-                if d >= max_gap_diff {
-                    left = i;
-                    max_gap_diff = d;
-                }
-            }
-            left
+        if false {
+            let diffs: Vec<f64> = sorted_r
+                .iter()
+                .map(|r| (kl.wrapping_sub(*r) & mod_mask) as f64 / (gap as f64))
+                .collect();
+            let vals: Vec<bool> = diffs.iter().map(|d| *d < 1.0).collect();
+            assert!(
+                left == get_left_pos(*kl, &sorted_r, gap, mod_mask),
+                "left {}, ideal {}, diffs {:?}, vals {:?}",
+                left,
+                get_left_pos(*kl, &sorted_r, gap, mod_mask),
+                diffs,
+                vals
+            );
+            assert!(
+                right == get_right_pos(*kl, &sorted_r, mod_mask),
+                "right {}, ideal {}, diffs {:?}, vals {:?}",
+                right,
+                get_right_pos(*kl, &sorted_r, mod_mask),
+                diffs,
+                vals
+            );
         }
 
-        let mut left = get_left_pos(first_kl, &sorted_r, gap, mod_mask);
-        let mut right = get_right_pos(first_kl, &sorted_r, mod_mask);
-
-        /* Note: on the first iteration, right and left pointers should not move */
-        for kl in sorted_l.iter() {
-            /* Update pointer positions for new (nondecreased) kl. For the right pointer,
-             * as it minimizes, it is enough to move it right as long as that reduces the value */
-            while (kl.wrapping_sub(sorted_r[(right + 1) % sorted_r.len()]) & mod_mask)
-                <= (kl.wrapping_sub(sorted_r[right]) & mod_mask)
-            {
-                // println!("advance right");
-                right = (right + 1) % sorted_r.len();
-                // r_unwrapped += 1;
+        /* local count is: (right - left + 1), which _may_ equal zero (with no matches) or count (with all matches) */
+        let mut local_count = (sorted_r.len() + right + 1 - left) % sorted_r.len();
+        if local_count == 0 {
+            if (kl.wrapping_sub(sorted_r[right]) & mod_mask) < gap {
+                // println!("pseudoempty");
+                local_count += sorted_r.len();
             }
-            /* The left pointer maximizes a quantity, so the naive way to find that would be to iterate
-             * in order of increasing values (leftwards), which is inefficient. Instead, move right _to
-             * the next distinct value_ while the position to the left has a strictly larger quantity. */
-            while (kl
-                .wrapping_sub(sorted_r[(left + sorted_r.len() - 1) % sorted_r.len()])
-                .wrapping_sub(gap)
-                & mod_mask)
-                > (kl.wrapping_sub(sorted_r[left]).wrapping_sub(gap) & mod_mask)
-            {
-                // println!(
-                //     "advance left: {} {}",
-                //     (kl.wrapping_sub(
-                //         sorted_r[(left + sorted_r.len() - 1) % sorted_r.len()]
-                //     )
-                //     .wrapping_sub(gap)
-                //         & mod_mask),
-                //     (kl.wrapping_sub(sorted_r[left]).wrapping_sub(gap) & mod_mask)
-                // );
-
-                let cval = sorted_r[left];
-                while sorted_r[left] == cval {
-                    left = (left + 1) % sorted_r.len();
-                    // l_unwrapped += 1;
-                }
-            }
-
-            if false {
-                let diffs: Vec<f64> = sorted_r
-                    .iter()
-                    .map(|r| (kl.wrapping_sub(*r) & mod_mask) as f64 / (gap as f64))
-                    .collect();
-                let vals: Vec<bool> = diffs.iter().map(|d| *d < 1.0).collect();
-                assert!(
-                    left == get_left_pos(*kl, &sorted_r, gap, mod_mask),
-                    "left {}, ideal {}, diffs {:?}, vals {:?}",
-                    left,
-                    get_left_pos(*kl, &sorted_r, gap, mod_mask),
-                    diffs,
-                    vals
-                );
-                assert!(
-                    right == get_right_pos(*kl, &sorted_r, mod_mask),
-                    "right {}, ideal {}, diffs {:?}, vals {:?}",
-                    right,
-                    get_right_pos(*kl, &sorted_r, mod_mask),
-                    diffs,
-                    vals
-                );
-            }
-
-            /* local count is: (right - left + 1), which _may_ equal zero (with no matches) or count (with all matches) */
-            let mut local_count = (sorted_r.len() + right + 1 - left) % sorted_r.len();
-            if local_count == 0 {
-                if (kl.wrapping_sub(sorted_r[right]) & mod_mask) < gap {
-                    // println!("pseudoempty");
-                    local_count += sorted_r.len();
-                }
-            }
-
-            // println!("kl={}, scan: l={} r={}, idl={} local_count = {}, diffs {:?} vals {:?}", kl, left, right, get_left_pos(*kl, &sorted_r, gap, mod_mask),local_count, diffs, vals);
-
-            if false {
-                let mut brute_local = 0;
-                for kr in sorted_r.iter() {
-                    let diff = kl.wrapping_sub(*kr) & mod_mask;
-                    if diff < gap {
-                        brute_local += 1;
-                    }
-                }
-
-                assert!(
-                    brute_local == local_count,
-                    "brute {} local {}",
-                    brute_local,
-                    local_count,
-                );
-            }
-
-            count += local_count as u128;
         }
+
+        // println!("kl={}, scan: l={} r={}, idl={} local_count = {}, diffs {:?} vals {:?}", kl, left, right, get_left_pos(*kl, &sorted_r, gap, mod_mask),local_count, diffs, vals);
+
+        if false {
+            let mut brute_local = 0;
+            for kr in sorted_r.iter() {
+                let diff = kl.wrapping_sub(*kr) & mod_mask;
+                if diff < gap {
+                    brute_local += 1;
+                }
+            }
+
+            assert!(
+                brute_local == local_count,
+                "brute {} local {}",
+                brute_local,
+                local_count,
+            );
+        }
+
+        count = count.wrapping_add(local_count as u128);
     }
 
     if false {
@@ -3134,7 +3143,9 @@ fn compute_oms_batch_ring_count(
     count
 }
 
-/** Compute total signed delta contribution, for each key_l, against all keys_r. Differences to use are L - R. */
+/** Count the number of "directed interactions" between keys_l and keys_r:
+ * oriented pairs (x,y) of keys for which `Pr[a(x-y) in 2^{u-o}] > 0` for
+ * extensions of `alpha`. */
 fn compute_oms_batch_delta(
     keys_l: &[u64],
     keys_r: &[u64],
@@ -3146,117 +3157,59 @@ fn compute_oms_batch_delta(
     u_bits: u32,
     output_bits: u32,
 ) -> u128 {
-    let mut true_sum = 0;
-    if false {
-        // By brute force, with compute_delta_mod, compute the _actual_ batch delta, so we have something
-        // to test locally against
-        for k_l in keys_l.iter() {
-            for k_r in keys_r.iter() {
-                assert!(
-                    k_l.wrapping_mul(alpha)
-                        .wrapping_sub(k_r.wrapping_mul(alpha))
-                        .trailing_zeros()
-                        == i_bits
-                );
-                let d1 = compute_delta_mod(
-                    k_l.wrapping_mul(alpha),
-                    k_r.wrapping_mul(alpha),
-                    alpha_bits,
-                    u_bits,
-                    output_bits,
-                );
-                let d2 = compute_delta_mod(
-                    k_r.wrapping_mul(alpha),
-                    k_l.wrapping_mul(alpha),
-                    alpha_bits,
-                    u_bits,
-                    output_bits,
-                );
-                true_sum += (d1 as u128) + (d2 as u128);
-            }
-        }
-    }
-
-    /* Extension differences are multiples of `1<<mult_bits` */
     let mult_bits = alpha_bits + i_bits;
-    if mult_bits <= u_bits - output_bits {
-        /* Easy case: extension differences are _more_ fine grained than the target interval, number
-         * of bad extensions is always the same. */
-        let extensions_per_pair = 1u128 << (u_bits - output_bits - alpha_bits);
-        let npairs = (keys_l.len() as u128) * (keys_r.len() as u128) * 2;
-        let total = npairs.checked_mul(extensions_per_pair).unwrap();
-        if false {
-            assert!(total == true_sum);
-        }
-        return total;
+    assert!(mult_bits > u_bits - output_bits);
+
+    /* Tricky case: extension differences are _less_ fine grained than the target interval.
+     *
+     * For how many pairs 'k_l, k_r' does `k_r - k_l + [0,2^{u-o})` contain a multiple
+     * of 2^{alpha_bits+i}? To count these, mod by 'm = min(2^{alpha_bits+i},2^u)', and then count
+     * the number of cases where `k_r - k_l + [0,2^{u-o})` contains 0 under this mod;
+     * in other words, where `kl - kr mod m` is < 2^{u-o}`.
+     *
+     * Is there any way to amortize costs across function calls when mult_bits >= u_bits?
+     * (This may be difficult to do since the lists might (or might not) change significantly
+     * with each alpha update; but if this can be done, then one could significantly reduce
+     * the cost of querying.)
+     */
+    let mod_mask = if mult_bits < u_bits {
+        (1 << mult_bits) - 1
     } else {
-        /* Tricky case: extension differences are _less_ fine grained than the target interval.
-         *
-         * For how many pairs 'k_l, k_r' does `k_r - k_l + [0,2^{u-o})` contain a multiple
-         * of 2^{alpha_bits+i}? To count these, mod by 'm = min(2^{alpha_bits+i},2^u)', and then count
-         * the number of cases where `k_r - k_l + [0,2^{u-o})` contains 0 under this mod;
-         * in other words, where `kl - kr mod m` is < 2^{u-o}`.
-         *
-         * Is there any way to amortize costs across function calls when mult_bits >= u_bits?
-         * (This may be difficult to do since the lists might (or might not) change significantly
-         * with each alpha update; but if this can be done, then one could significantly reduce
-         * the cost of querying.)
-         */
-        let mod_mask = if mult_bits < u_bits {
-            (1 << mult_bits) - 1
-        } else {
-            u64::MAX
-        };
-        let weight = if mult_bits < u_bits {
-            1 << i_bits
-        } else {
-            1 << (u_bits - alpha_bits)
-        };
+        u64::MAX
+    };
 
-        if keys_l.is_empty() || keys_r.is_empty() {
-            /* Note: to have more 'worst-case' like behavior, move this check after the sorting is done.
-             * (The most average-case-friendly optimization may be to build an index of nontrivial
-             * key/value pairs; on fully random input, most common lsb-prefixes are short so all long
-             * prefixes can be entirely skipped.) */
-            return 0;
-        }
-
-        /* Note: `mod_mask` is also applied during the ring count, so one could avoid
-         * masking here, and apply the mask while sorting; doing this
-         * would require adjusting the 'all_equal' case of [compute_oms_batch_ring_count]. */
-        for (ak, k) in scratch_l.iter_mut().zip(keys_l.iter()) {
-            *ak = k.wrapping_mul(alpha) & mod_mask;
-        }
-        for (ak, k) in scratch_r.iter_mut().zip(keys_r.iter()) {
-            *ak = k.wrapping_mul(alpha) & mod_mask;
-        }
-        scratch_l.sort_unstable();
-        scratch_r.sort_unstable();
-
-        let gap = 1 << (u_bits - output_bits);
-
-        let count_lr = compute_oms_batch_ring_count(&scratch_l, &scratch_r, gap, mod_mask);
-        let count_rl = compute_oms_batch_ring_count(&scratch_r, &scratch_l, gap, mod_mask);
-        let count = count_rl + count_lr;
-
-        if false {
-            assert!(
-                count.checked_mul(weight).unwrap() == true_sum,
-                "hard path: {} {}, u={}, alpha={}, i={}, o={}; L={:?} R={:?}; count = {}",
-                count.checked_mul(weight).unwrap(),
-                true_sum,
-                u_bits,
-                alpha_bits,
-                i_bits,
-                output_bits,
-                scratch_l,
-                scratch_r,
-                count
-            );
-        }
-
-        return count.checked_mul(weight).unwrap();
+    if keys_l.is_empty() || keys_r.is_empty() {
+        /* Note: to have more 'worst-case' like behavior, move this check after the sorting is done.
+         * (The most average-case-friendly optimization may be to build an index of nontrivial
+         * key/value pairs; on fully random input, most common lsb-prefixes are short so all long
+         * prefixes can be entirely skipped.) */
+        return 0;
     }
+
+    /* Note: `mod_mask` is also applied during the ring count, so one could avoid
+     * masking here, and apply the mask while sorting; doing this
+     * would require adjusting the 'all_equal' case of [compute_oms_batch_ring_count]. */
+    for (ak, k) in scratch_l.iter_mut().zip(keys_l.iter()) {
+        *ak = k.wrapping_mul(alpha) & mod_mask;
+    }
+    for (ak, k) in scratch_r.iter_mut().zip(keys_r.iter()) {
+        *ak = k.wrapping_mul(alpha) & mod_mask;
+    }
+    scratch_l.sort_unstable();
+    scratch_r.sort_unstable();
+
+    let gap = 1 << (u_bits - output_bits);
+
+    // TODO: it may be worth it to replace linked scans with scan+binary search
+    // when one side is much larger than the other. This should wait until the
+    // base interaction count is optimized and/or structure of the level sets is
+    // better understood
+
+    let count_lr = compute_oms_batch_ring_count(&scratch_l, &scratch_r, gap, mod_mask);
+    let count_rl = compute_oms_batch_ring_count(&scratch_r, &scratch_l, gap, mod_mask);
+    let count = count_rl + count_lr;
+
+    return count;
 }
 
 /** Sort array by bit-reversed entries. (This is a separate non-inlined function for easier cost tracking
@@ -3267,16 +3220,138 @@ fn bit_rev_sort(arr: &mut [u64]) {
     arr.sort_unstable_by_key(|x| x.reverse_bits());
 }
 
+/** Calculate the initial interaction counts for each difference level of the given key list.
+ *
+ * `rev_sorted_keys` should be sorted by reversed bits, and shifted by (u64::BITS - u_bits).
+ *
+ * Note: while this approach can be used to efficiently enumerate all O(n) distinct
+ * common-prefix intervals with distinct 0/1 next bits, the sum of all interval lengths
+ * ranges from O(n log n) to O(n b), so using it to efficiently iterate over intervals
+ * for batch delta computation risks being an average-case optimization. (On the other hand,
+ * if the sum of all interval lengths is Ω(n b), then there will be large 0/1 "unbalanced"
+ * intervals for which the sum may be efficiently computable; it _may_ be possible to use
+ * this to improve runtime to O(n (log n)^2), but this would only be a slight improvement
+ * in practice since e.g. log n=20, b=64.)
+ *
+ * Runtime: O(n + b).
+ */
+#[inline(never)]
+fn oms_base_interaction_count(
+    rev_sorted_keys: &[u64],
+    _u_bits: u32,
+    output_bits: u32,
+) -> Vec<u128> {
+    let max_bit = u64::BITS - output_bits;
+    let mut counters = vec![0u128; max_bit as usize];
+
+    #[derive(Debug)]
+    struct Transition {
+        bit: u32,   /* index `i` of the least significant bit which is changing from 0 to 1 */
+        pos: usize, /* index so that (rev_sorted_keys[j] >> bit) & 1 == 1 */
+    }
+
+    let mut stack: Vec<Transition> = Vec::new();
+    stack.reserve(max_bit as usize);
+
+    for (i_m_1, pair) in rev_sorted_keys.windows(2).enumerate() {
+        let i = i_m_1 + 1;
+        let (prev, next) = (pair[0], pair[1]);
+
+        let common_bits = (prev ^ next).trailing_zeros().min(max_bit - 1);
+        let prev_bit_value = ((prev >> common_bits) & 1) != 0;
+        let next_bit_value = ((next >> common_bits) & 1) != 0;
+        if common_bits < max_bit - 1 {
+            assert!(!prev_bit_value && next_bit_value);
+        } else {
+            if prev_bit_value == next_bit_value {
+                /* No transition, continue */
+                continue;
+            }
+        }
+
+        let t = Transition {
+            bit: common_bits,
+            pos: i,
+        };
+
+        /* Pop elements from stack, and update the count table */
+        loop {
+            if let Some(top) = stack.last() {
+                /* Cannot transition from 0 to 1 multiple times in a row */
+                assert!(top.bit != common_bits);
+                if top.bit < common_bits {
+                    break;
+                }
+            } else {
+                break;
+            }
+
+            let top = stack.pop().unwrap();
+            let segment_start = if let Some(s) = stack.last() { s.pos } else { 0 };
+            let count0 = top.pos - segment_start;
+            let count1 = i - top.pos;
+            /* Factor two included because we count _directed_ interactions. */
+            let product = 2 * (count0 as u128) * (count1 as u128);
+            counters[top.bit as usize] = counters[top.bit as usize].wrapping_add(product);
+        }
+
+        stack.push(t);
+    }
+
+    /* Final stack cleanup. */
+    while let Some(top) = stack.pop() {
+        let segment_start = if let Some(s) = stack.last() { s.pos } else { 0 };
+        let count0 = top.pos - segment_start;
+        let count1 = rev_sorted_keys.len() - top.pos;
+        let product = 2 * (count0 as u128) * (count1 as u128);
+        counters[top.bit as usize] = counters[top.bit as usize].wrapping_add(product);
+    }
+
+    if false {
+        let mut reference = vec![0u128; (u64::BITS - output_bits) as usize];
+        for i in 0..(u64::BITS - output_bits) {
+            let msk = (1 << i) - 1;
+            let mut interval_start = 0;
+            while interval_start < rev_sorted_keys.len() {
+                let common_prefix = rev_sorted_keys[interval_start] & msk;
+
+                let mut count1 = 0;
+                let mut interval_end = interval_start;
+
+                while interval_end < rev_sorted_keys.len()
+                    && (rev_sorted_keys[interval_end] & msk) == common_prefix
+                {
+                    count1 += (rev_sorted_keys[interval_end] & (1 << i)) >> i;
+                    interval_end += 1;
+                }
+
+                let count0 = (interval_end - interval_start) as u64 - count1;
+                let pairs = 2 * (count0 as u128) * (count1 as u128);
+                reference[i as usize] = reference[i as usize].checked_add(pairs).unwrap();
+                interval_start = interval_end;
+            }
+        }
+
+        println!("fast {:?}", counters);
+        println!("slow {:?}", reference);
+        assert!(counters == reference);
+    }
+
+    counters
+}
+
 /* Variant of Raman95 using a pessimistic estimator for 'bad extensions'
  * that may be more amenable to optimizations, with iteration order
  * improvements and batch optimizations, but no 'cross-bit' optimizations.
  *
- * Runtime: O(n b^2 (log n)). (It may be possible to improve this to O(n b^2)
+ * Runtime: O(sort(n) * b (log n)) = O(n * b (log n)^2) with comparison sorts.
+ * (It may be possible to improve this to O(n b^2) with radix sort; or
  * by combining sort operations between `i` passes, but `mod_mask` complicates
  * this, and the sorting operation is not clearly a bottleneck in practice;
- * rather, the O(b^2) operations per element are. Further improvements may be
+ * rather, the O(b log n) operations per element are. Further improvements may be
  * possible (e.g: using the structure of the longest common prefix array).)
  */
+#[inline(never)]
 fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> MultiplyShiftHash {
     assert!(keys.len() < usize::MAX / 2); /* For wrapping index calculations */
 
@@ -3298,16 +3373,11 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
     /* Scratch storage table in which to write multiplied/sorted data */
     let mut scratch = vec![0u64; rev_sorted_keys.len()];
 
-    // let aux = build_oms_opt_aux(keys);
-
     let mut a = 1;
     // let mut last_wt = None;
 
-    // TODO: consider separating out calculation of the `alpha_bits + i <= u_bits - output_bits`
-    // case; it may be possible to handle all small `i` do this in better than O(b) passes.
-    // But: to make a worst-case improvement, would need an efficient way to handle the
-    // `alpha_bits + i >= u_bits` cases. (Perhaps those can be processed, for each i,
-    // using a single pair of iteration over `sort(a * keys)`, letting us amortize sorting costs?)
+    let base_counts = oms_base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+    let mut last_interaction_counts = base_counts.clone();
 
     let mut last_wt = None;
     /* Bits in 'a' higher than or at u_bits have no effect on the output */
@@ -3316,19 +3386,48 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
          * plus the weight of the 1-bit extension, should equal the weight from the previous
          * iteration. (Except in first round, where we find the initial weight of `a`.) */
         let mut wt = 0;
+
+        let mut interaction_counts = last_interaction_counts.clone(); // vec![0u128; (u64::BITS - output_bits) as usize];
+
+        let alpha_bits = b + 1;
+
         /* Can entirely ignore keys matching on the bottom `u-o` keys, because multiplying
          * them by 'a' never causes a collision */
         for i in 0..(u64::BITS - output_bits) {
+            let extensions_per_interaction: u128 = if alpha_bits + i <= u64::BITS - output_bits {
+                1 << (u64::BITS - output_bits - alpha_bits)
+            } else if alpha_bits + i < u64::BITS {
+                1 << i
+            } else {
+                1 << (u64::BITS - alpha_bits)
+            };
+
+            if alpha_bits + i <= u64::BITS - output_bits {
+                /* These counts do not change since alpha has not grown large enough to
+                 * bring level i differences into the top `o` bits. */
+                wt += base_counts[i as usize] * extensions_per_interaction;
+                continue;
+            }
+
+            if alpha_bits + i > u64::BITS + 1 && true {
+                /* These counts do not change because further extensions to `alpha` only
+                 * differently affect bits that are masked off by mod 2^u? */
+                wt += interaction_counts[i as usize] * extensions_per_interaction;
+                continue;
+            }
+
+            let mut interactions = 0;
             let msk = (1 << i) - 1;
             let mut interval_start = 0;
-            let mut lvl_i_wt = 0;
             while interval_start < rev_sorted_keys.len() {
                 let common_prefix = rev_sorted_keys[interval_start] & msk;
 
                 let mut count1 = 0;
                 let mut interval_end = interval_start;
 
-                // TODO: use an enumerated &iterator? Or are bounds checks already eliminated
+                // TODO: use an enumerated &iterator? or sentinel? Or are bounds checks already eliminated
+                // TODO: the most practical thing may be to build an index, to avoid scanning too many
+                // unpaired or tiny intervals.
                 while interval_end < rev_sorted_keys.len()
                     && (rev_sorted_keys[interval_end] & msk) == common_prefix
                 {
@@ -3346,14 +3445,13 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
                 let scratch_region = &mut scratch[interval_start..interval_end];
                 let (scratch0, scratch1) = scratch_region.split_at_mut(count0);
 
-                // TODO: report the 'interaction_count' instead, and defer scaling until weight aggregation
-                lvl_i_wt += compute_oms_batch_delta(
+                interactions += compute_oms_batch_delta(
                     &keys0,
                     &keys1,
                     scratch0,
                     scratch1,
                     a,
-                    b + 1,
+                    alpha_bits,
                     i,
                     u64::BITS,
                     output_bits,
@@ -3361,8 +3459,34 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
 
                 interval_start = interval_end;
             }
-            wt += lvl_i_wt;
+
+            interaction_counts[i as usize] = interactions;
+            if alpha_bits + i <= u64::BITS - output_bits {
+                assert!(interaction_counts[i as usize] == base_counts[i as usize]);
+            }
+
+            if alpha_bits + i > u64::BITS + 1 {
+                assert!(
+                    interaction_counts[i as usize] == last_interaction_counts[i as usize],
+                    "{} -> {}",
+                    last_interaction_counts[i as usize],
+                    interaction_counts[i as usize]
+                );
+            }
+
+            // todo: do interactions per level always decrease? (usually _but not always_)
+            if false {
+                if interaction_counts[i as usize] > last_interaction_counts[i as usize] {
+                    println!("u {} increase in count at i={}; alpha_bits + i={}, u_bits-output_bits={}, from {} to {}", u_bits, i,
+                            alpha_bits + i, u_bits - output_bits, last_interaction_counts[i as usize], interaction_counts[i as usize]);
+                    // Note: since there are O(n) intervals, could record change in interaction counts per-interval
+                }
+            }
+
+            wt += interaction_counts[i as usize] * extensions_per_interaction;
         }
+        // println!("interaction counts: {:?}", interaction_counts);
+        last_interaction_counts = interaction_counts;
 
         if let Some(lwt) = last_wt {
             /* Chose the sub-average branch. */
@@ -3384,28 +3508,23 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
     }
 }
 
+/* ---------------------------------------------------------------------------- */
+
 /**
- * Universe reduction using the Raman95 hash function, followed
- * by HMPQuadHash.
- *
- * TODO: make a variant, where the first of the two double displacement
- * hashes is replaced by a fast Raman map from `[n^2] -> [n]`. (The
- * Raman multiplicative design has the nice property that `ax` is
- * 1:1, so the top `log n` bits (which are low-collision hashed) and
- * the bottom `log n` bits together uniquely identify a key.) Doing
- * this would reduce HMP01 to a single-table design which may reduce
- * the latency at large scales.
+ * Universe reduction using the OMS hash construction, followed by HMPQuadHash.
  */
-pub struct FRxHMP01Hash {
+pub struct OMSxHMP01Hash {
     reduction: FastOMS,
     hash: HMPQuadHash,
 }
-pub type FRxHMP01Dict = HDict<FRxHMP01Hash>;
+pub type OMSxHMP01Dict = HDict<OMSxHMP01Hash>;
 
-impl PerfectHash<u64, u64> for FRxHMP01Hash {
-    fn new(keys: &[u64], u_bits: u32) -> FRxHMP01Hash {
+impl PerfectHash<u64, u64> for OMSxHMP01Hash {
+    fn new(keys: &[u64], u_bits: u32) -> OMSxHMP01Hash {
         let reduction = FastOMS::new(keys, u_bits);
-        let r_bits = reduction.output_bits().div_ceil(2);
+        let half_bits = reduction.output_bits().div_ceil(2);
+        let nbits = next_log_power_of_two(keys.len());
+        let r_bits = half_bits.max(nbits + 1);
         let reduced_keys: Vec<(u64, u64)> = keys
             .iter()
             .map(|k| {
@@ -3414,7 +3533,7 @@ impl PerfectHash<u64, u64> for FRxHMP01Hash {
             })
             .collect();
         let hash = HMPQuadHash::new(&reduced_keys, r_bits);
-        FRxHMP01Hash { reduction, hash }
+        OMSxHMP01Hash { reduction, hash }
     }
     fn query(&self, key: u64) -> u64 {
         let v = self.reduction.query(key);
@@ -3426,26 +3545,31 @@ impl PerfectHash<u64, u64> for FRxHMP01Hash {
     }
 }
 
+#[test]
+fn test_omsxhmp01_hash() {
+    test_perfect_hash::<OMSxHMP01Hash>();
+}
+
 /* ---------------------------------------------------------------------------- */
 
-/** The FKS84 hash construction using RamanHashFast for the primary hash, and Raman95Hash
+/** The FKS84 hash construction using the fast OMS construction for the primary hash, and Raman95
  * for the secondary hash (because while the latter takes quadratic time, it is a bit faster
  * than the batch construction on small inputs.)
  *
  * NOTE: it may be worth switching between quadratic/near-linear constructions on large inputs,
  * and/or special casing O(1) sized inputs to save space.
  */
-pub struct FRxFKSHash {
+pub struct OMSxFKSHash {
     primary_hash: MultiplyShiftHash,
     // secondary hashes + base offsets. Note: the u_bits values for these are all the same
     secondary_hashes: Vec<(MultiplyShiftHash, u64)>,
     output_bits: u32,
 }
-pub type FRxFKSDict = HDict<FRxFKSHash>;
+pub type OMSxFKSDict = HDict<OMSxFKSHash>;
 
-impl PerfectHash<u64, u64> for FRxFKSHash {
+impl PerfectHash<u64, u64> for OMSxFKSHash {
     fn new(keys: &[u64], u_bits: u32) -> Self {
-        /* Optimal number of bits in the secondary table. See Remark 9 of analysis.pdf
+        /* Optimal number of bits in the secondary table. See analysis.pdf
          * for the calculation. This assumes size=1 buckets are efficiently packed
          * into gaps. */
         let bytes_per_leaf = std::mem::size_of::<(MultiplyShiftHash, u64)>();
@@ -3505,7 +3629,7 @@ impl PerfectHash<u64, u64> for FRxFKSHash {
             free_offset += 1;
         }
 
-        FRxFKSHash {
+        OMSxFKSHash {
             primary_hash,
             secondary_hashes,
             output_bits,
@@ -3524,6 +3648,154 @@ impl PerfectHash<u64, u64> for FRxFKSHash {
 }
 
 #[test]
-fn test_frxfks_hash() {
-    test_perfect_hash::<FRxFKSHash>();
+fn test_omsxfks_hash() {
+    test_perfect_hash::<OMSxFKSHash>();
+}
+
+/* ---------------------------------------------------------------------------- */
+
+/** A perfect hash using two multiplications followed by a table lookup.
+ *
+ * The double displacement perfect hashing stage of [OMSxHMP01Hash] uses two displacement steps
+ * (each with a large lookup table), where the first reduces the number of collisions and the
+ * second completes the perfect hashing. The OMS hash can be used again in place of the first table,
+ * because it also is collision reducing, and it has the nice property that the map `ax mod 2^u`
+ * is 1:1, so the top `log n` bits (which are low-collision hashed) and the bottom `log n` bits
+ * together uniquely identify a key.
+ *
+ * Open question: can this design be made to work with a single multiplication?
+ */
+pub struct OMSxDispHash {
+    a1: u64,
+    mask: u64,
+    a2: u64,
+    shift_hi: u32,
+    shift_lo: u32,
+    displacements: Vec<u64>,
+    output_bits: u32,
+}
+pub type OMSxDispDict = HDict<OMSxDispHash>;
+
+impl PerfectHash<u64, u64> for OMSxDispHash {
+    fn new(keys: &[u64], u_bits: u32) -> Self {
+        /* First multiplication parameters are straightforward: reduce the space as far as possible
+         * without collisions */
+        let s_bits =
+            next_log_power_of_two(keys.len().wrapping_mul(keys.len().wrapping_sub(1)) + 1).max(1);
+        assert!(s_bits < u64::BITS);
+        let primary_hash = oms_opt_batch_construction(keys, u_bits, s_bits);
+        let mask = u64::MAX ^ ((1 << primary_hash.shift) - 1);
+        let reduced_keys = Vec::from_iter(keys.iter().map(|k| primary_hash.query(*k)));
+
+        /* Compute hash and table parameters to minimize total space
+         * when used to implement a dictionary. */
+        let bytes_per_output = std::mem::size_of::<(u64, u64)>();
+        let bytes_per_table_entry = std::mem::size_of::<u64>();
+        let w = next_log_power_of_two(4 * keys.len() * keys.len().saturating_sub(1));
+        let n_bits = next_log_power_of_two(keys.len());
+        let log_ratio = next_log_power_of_two(bytes_per_table_entry.div_ceil(2 * bytes_per_output));
+        let ideal_r = (log_ratio + w).div_ceil(2);
+        /* Number of output bits */
+        let r_bits = ideal_r.clamp(n_bits, w);
+        /* Number of table index bits */
+        let t_bits = w - r_bits;
+        /* Number of bits to XOR with (may be equal to or less than `r`) */
+        let lo_bits = s_bits.checked_sub(t_bits).unwrap();
+
+        let secondary_hash = oms_opt_batch_construction(&reduced_keys, s_bits, t_bits);
+
+        if t_bits == 0 {
+            /* Special case: the displacement table is not needed.
+             *
+             * However, the specific shifts used to query can not shift the high bit region
+             * to zero, so instead zero the low bits and use an identity displacement map;
+             * this special case only occurs for tiny `n` so this is not expensive.
+             */
+            return OMSxDispHash {
+                a1: primary_hash.a,
+                mask,
+                a2: 1,
+                shift_hi: u64::BITS - s_bits,
+                shift_lo: u64::BITS - s_bits,
+                displacements: (0..(1 << s_bits)).collect(),
+                output_bits: s_bits,
+            };
+        }
+
+        let split_keys: Vec<(u64, u64)> = reduced_keys
+            .iter()
+            .map(|k| {
+                let d = (secondary_hash.a.wrapping_mul(*k)) >> (u64::BITS - s_bits);
+
+                assert!(*k >> s_bits == 0 && d >> s_bits == 0);
+                let hi = d >> lo_bits;
+                let lo = d & ((1 << lo_bits) - 1);
+                assert!(hi >> r_bits == 0);
+                assert!(lo >> r_bits == 0);
+                (hi, lo)
+            })
+            .collect();
+
+        // Test variant: explicitly verify that collision counts are as expected?
+
+        let displacements = compute_displacement(&split_keys, t_bits, r_bits);
+
+        let ret = OMSxDispHash {
+            a1: primary_hash.a,
+            mask,
+            a2: secondary_hash.a >> (u64::BITS - s_bits),
+            shift_hi: u64::BITS - t_bits,
+            shift_lo: u64::BITS - s_bits,
+            displacements,
+            output_bits: r_bits,
+        };
+
+        if false {
+            for key in keys.iter() {
+                let reduced = key.wrapping_mul(ret.a1) & ret.mask;
+                let decollided = reduced.wrapping_mul(ret.a2);
+                let hi = decollided >> ret.shift_hi;
+                let lo = (decollided >> ret.shift_lo) & ((1 << (ret.shift_hi - ret.shift_lo)) - 1);
+
+                let red = primary_hash.query(*key);
+                let decol = (secondary_hash.a.wrapping_mul(red)) >> (u64::BITS - s_bits);
+                let hi2 = decol >> lo_bits;
+                let lo2 = decol & ((1 << lo_bits) - 1);
+                assert!(
+                    hi == hi2 && lo == lo2,
+                    "{:64b} {} {} | {:64b} {} {}",
+                    decollided >> ret.shift_lo,
+                    hi,
+                    lo,
+                    decol,
+                    hi2,
+                    lo2
+                );
+            }
+
+            let mut check: BTreeSet<u64> = BTreeSet::new();
+            for k in split_keys.iter() {
+                check.insert(k.0 | (k.1 << r_bits));
+            }
+            assert!(check.len() == split_keys.len());
+        }
+
+        ret
+    }
+    fn output_bits(&self) -> u32 {
+        self.output_bits
+    }
+
+    fn query(&self, key: u64) -> u64 {
+        let reduced = key.wrapping_mul(self.a1) & self.mask;
+        let decollided = reduced.wrapping_mul(self.a2);
+        let hi = decollided >> self.shift_hi;
+        let lo = (decollided >> self.shift_lo) & ((1 << (self.shift_hi - self.shift_lo)) - 1);
+        self.displacements[hi as usize] ^ lo
+    }
+}
+
+#[test]
+fn test_omsxdisp_hash() {
+    test_perfect_hash::<OMSxDispHash>();
 }

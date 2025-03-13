@@ -215,7 +215,7 @@ deduplication
 \end_layout
 
 \begin_layout Enumerate
-\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)\right\rfloor $
+\begin_inset Formula $\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}-\sum_{i\in\left[n\right]}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\le n\left\lfloor \frac{1}{2^{r}}\left(\max\left(n,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)-1\right)\right\rfloor $
 \end_inset
 
 .
@@ -424,10 +424,10 @@ use the permutation sort order;
 \left\lfloor \frac{1}{2^{r}}\sum_{j<i}\left|F_{\pi\left(j\right)}\right|\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\le1}}
 \end{cases}\\
  & \le n\max_{i\in\left\{ 0,1\right\} ^{r}}\begin{cases}
-\left\lfloor \frac{1}{2^{r}}\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\ge2}}\\
+\left\lfloor \frac{1}{2^{r}}\left(\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}-\min_{\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\ge2}}\\
 \left\lfloor \frac{1}{2^{r}}\left(n-1\right)\right\rfloor  & \text{if \ensuremath{\left|F_{\pi\left(i\right)}\right|\le1}}
 \end{cases}\\
- & \le n\left\lfloor \frac{1}{2^{r}}\max\left(n-1,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)\right\rfloor 
+ & \le n\left\lfloor \frac{1}{2^{r}}\left(\max\left(n,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)-1\right)\right\rfloor 
 \end{align*}
 
 \end_inset
@@ -590,9 +590,9 @@ nolink "false"
 .
  Then:
 \begin_inset Formula 
-\[
-\frac{1}{2^{r}}\binom{n}{2}\ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}\ge\frac{1}{4}\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}
-\]
+\begin{equation}
+\frac{1}{2^{r}}\binom{n}{2}\ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|H_{x}\right|}{2}\ge\frac{1}{4}\sum_{x\in\left\{ 0,1\right\} ^{r}:\left|H_{x}\right|\ge2}\left|H_{x}\right|^{2}\label{eq:h2vshpair}
+\end{equation}
 
 \end_inset
 
@@ -722,7 +722,8 @@ Therefore,
  satisfies:
 \begin_inset Formula 
 \begin{align*}
-\kappa:=\sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2} & =\sum_{x\in\left\{ 0,1\right\} ^{r}}\left(\binom{\left|F_{x}\right|}{2}-\sum_{i\in F_{x}}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\right)\\
+\kappa:= & \sum_{x\in\left\{ 0,1\right\} ^{r}}\binom{\left|F_{x}\right|}{2}-\sum_{i\in\left[n\right]}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\\
+ & =\sum_{x\in\left\{ 0,1\right\} ^{r}}\left(\binom{\left|F_{x}\right|}{2}-\sum_{i\in F_{x}}\frac{1}{\left|\mu^{-1}\left(i\right)\right|}\binom{\left|\mu^{-1}\left(i\right)\right|}{2}\right)\\
  & \ge\sum_{x\in\left\{ 0,1\right\} ^{r}}\frac{\left|\mu\left(F_{x}\right)\right|}{2}\left(2\left|F_{x}\right|-\left|\mu\left(F_{x}\right)\right|-1\right)
 \end{align*}
 
@@ -799,6 +800,134 @@ The last inequality follows because if
 
  then 
 \begin_inset Formula $\left|\mu\left(F_{x}\right)\right|\left(2\left|F_{x}\right|-\left|\mu\left(F_{x}\right)\right|-1\right)\ge\frac{1}{2}\left|\mu\left(F_{x}\right)\right|\left|F_{x}\right|$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Corollary
+For deterministic double displacement,
+ 
+\begin_inset Formula $f$
+\end_inset
+
+and 
+\begin_inset Formula $g$
+\end_inset
+
+ both map to 
+\begin_inset Formula $\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+.
+ The displacement procedure can also be used,
+ just once,
+ to convert a hash function with few collisions to one with none.
+ Then we may have 
+\begin_inset Formula $f:\left[n\right]\rightarrow\left\{ 0,1\right\} ^{t}$
+\end_inset
+
+ and 
+\begin_inset Formula $g:\left[n\right]\rightarrow\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+.
+ We require 
+\begin_inset Formula $x\mapsto\left(f\left(x\right),g\left(x\right)\right)$
+\end_inset
+
+ to be a bijection.
+ Define 
+\begin_inset Formula $F_{x}$
+\end_inset
+
+ and 
+\begin_inset Formula $G_{x}$
+\end_inset
+
+ as in 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+;
+ the total number of collisions for 
+\begin_inset Formula $f$
+\end_inset
+
+ is 
+\begin_inset Formula $\sum_{x}\binom{\left|F_{x}\right|}{2}$
+\end_inset
+
+.
+ Say this is 
+\begin_inset Formula $\le c$
+\end_inset
+
+.
+ Then one can construct a displacement function 
+\begin_inset Formula $d:\left\{ 0,1\right\} ^{t}\rightarrow\left\{ 0,1\right\} ^{r}$
+\end_inset
+
+ for which,
+ with function 
+\begin_inset Formula $h\left(x\right)=g\left(x\right)\oplus d\left(f\left(x\right)\right)$
+\end_inset
+
+,
+ and 
+\begin_inset Formula $H_{x}=\left\{ i\in\left[n\right]:h\left(i\right)=x\right\} $
+\end_inset
+
+,
+ we have that all 
+\begin_inset Formula $\left|H_{x}\right|\le1$
+\end_inset
+
+ if:
+\begin_inset Formula 
+\[
+\max\left(n,\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\right)\le2^{r}\qquad\text{where}\qquad\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}\le4c\,.
+\]
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Proof
+Modify the proof of Lemma 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "lem:det-displace"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
+\end_inset
+
+;
+ the bound on 
+\begin_inset Formula $\sum_{x:\left|F_{x}\right|\ge2}\left|F_{x}\right|^{2}$
+\end_inset
+
+ follows from Eq.
+ 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "eq:h2vshpair"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+
 \end_inset
 
 .
@@ -1652,6 +1781,111 @@ s=\min\left(\left\lceil \log\left(n-1\right)\right\rceil ,\left\lceil \frac{1}{2
 \end_inset
 
 .)
+\end_layout
+
+\begin_layout Lemma
+\begin_inset Argument 1
+status open
+
+\begin_layout Plain Layout
+Parameter selection for an odd-multiply-shift + displacement table perfect hash construction.
+\end_layout
+
+\end_inset
+
+ Let 
+\begin_inset Formula $n$
+\end_inset
+
+ and 
+\begin_inset Formula $s$
+\end_inset
+
+ be integers,
+ and 
+\begin_inset Formula $\alpha,\beta$
+\end_inset
+
+ nonnegative reals.
+ Under the constraints 
+\begin_inset Formula $r+t\ge s$
+\end_inset
+
+ and
+\begin_inset Formula 
+\[
+2^{r}\ge\max\left(n,4c\right)\qquad\text{where}\qquad c=\frac{n\left(n-1\right)}{2^{t}}\,.
+\]
+
+\end_inset
+
+we have that the minimum value of 
+\begin_inset Formula $\alpha2^{r}+\beta2^{t}$
+\end_inset
+
+ occurs when:
+ 
+\begin_inset Formula 
+\begin{align*}
+r & =\min\left(\max\left(\left\lceil \frac{1}{2}\left(\log\left(\frac{\beta}{2\alpha}\right)+w\right)\right\rceil ,\left\lceil \log n\right\rceil \right),w\right)\\
+ & \qquad\text{where}\qquad w=\max\left(s,\left\lceil \log\left(4\left(n\left(n-1\right)\right)\right)\right\rceil \right)
+\end{align*}
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Proof
+First,
+ note that 
+\begin_inset Formula $2^{r}\ge4\frac{n\left(n-1\right)}{2^{t}}$
+\end_inset
+
+ is true iff 
+\begin_inset Formula $r+t\ge\left\lceil \log\left(4\left(n\left(n-1\right)\right)\right)\right\rceil $
+\end_inset
+
+.
+ Since reducing either of 
+\begin_inset Formula $r$
+\end_inset
+
+ or 
+\begin_inset Formula $t$
+\end_inset
+
+ non-increases 
+\begin_inset Formula $\alpha2^{r}+\beta2^{t}$
+\end_inset
+
+,
+ the optimal value of 
+\begin_inset Formula 
+\[
+r+t=\max\left(s,\left\lceil \log\left(4\left(n\left(n-1\right)\right)\right)\right\rceil \right)=:w\,.
+\]
+
+\end_inset
+
+The quantity 
+\begin_inset Formula $2^{r}+\frac{\frac{\beta}{\alpha}2^{w}}{2^{t}}$
+\end_inset
+
+ is minimized when 
+\begin_inset Formula $r=\left\lceil \frac{1}{2}\log\left(\frac{\left(\frac{\beta}{\alpha}2^{w}\right)}{2}\right)\right\rceil =\left\lceil \frac{1}{2}\log\left(\frac{\beta}{2\alpha}2^{w}\right)\right\rceil $
+\end_inset
+
+,
+ but 
+\begin_inset Formula $r$
+\end_inset
+
+ is also subject to the constraints 
+\begin_inset Formula $r\in\left[\left\lceil \log n\right\rceil ,w\right]$
+\end_inset
+
+.
 \end_layout
 
 \begin_layout Bibliography
