@@ -53,7 +53,7 @@ pub fn make_random_chain_32(n: u64, seed_vals: u64, seed_order: u64) -> Vec<(u64
     // work for integer types >= usize.
     // TODO: implement the near linear-time, zero overhead, sorted subset sampling algorithm
     // Another approach would be to use a switching/shuffling network, but they are often slow
-    assert!(n <= (u32::MAX / 2) as u64); /* algorithm is only somewhat fast when sample size is <=1/2 universe */
+    assert!(n <= (u32::MAX / 2) as u64, "{}", n); /* algorithm is only somewhat fast when sample size is <=1/2 universe */
     let mut s = BTreeSet::<u64>::new();
     while s.len() < n as usize {
         let x = rng_vals.random_range(0..=(u32::MAX as u64));

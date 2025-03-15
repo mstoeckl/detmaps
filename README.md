@@ -34,13 +34,13 @@ The papers describing a deterministic dictionary usually glue together one or
 more hash functions, with some chain or tree-like construction fashion. The hash
 functions are usually fast to evaluate. There are three approximate categories:
 
-- Universe compression: `[2^b or n^{O(1)}] -> [n^c]` for `c ≥ 2`, with no
+- Universe reduction: `[2^b or n^{O(1)}] -> [n^c]` for `c ≥ 2`, with no
   collisions. Best possible space cost is `Θ(log n)` bits.
 
   - Ružić2009B: approximate square root reduction in domain size, with `c > 2`,
     using `O(log n)` bits and `O(n polylog n)` time. (Exact performance depends
-    on sorting (implemented, but `c > 3.42`) and inversion counting (not
-    implemented).)
+    on method used to estimate inversions (fast 2-approx gets `c > 3.42`, exact
+    calculation gets `c = 2`.)
   - HMP01: `[2^b] -> [n^c]` where `c` depends on the best high relative distance
     linear codes from `b` to `O(b)` bits and is at least `2`, but `3-6` in
     practice. Uses `O(\log n)` bits of space and `O(n polylog n)` construction
@@ -65,11 +65,14 @@ functions are usually fast to evaluate. There are three approximate categories:
   - The `Raman95` and `AlonN94` construction parameters can be smoothly adjusted
     to trade output space for collisions; the time/space are the same.
 
-The two best high level designs so far appear to be:
+The best high level designs appear to use universe reduction down to `[n^O(1)]`,
+and then apply (a constant number of times, possibly just once) an
+`[O(n^2)] -> [O(n)]` hash. The latter stage uses a low-collision hash followed
+by:
 
-- Low-collision followed by universe-compression-type on the (much smaller)
-  leaves: FKS84, Ružić09A
-- Universe-compression followed by compact perfect hash: HMP01
+- Using leaf hashes with range `O(b^2)` for size `b` leaves: FKS84, (partially)
+  Ružić09A
+- A displacement table: HMP01
 
 No deterministic construction is known for which (like the randomized Czech,
 Havas, Majewski 1992 or Cuckoo perfect hash constructions) only one round of
@@ -107,8 +110,12 @@ Some of these are attainable with randomized constructions.
   hyperparameters been optimized.
 - The benchmarks do not show the memory usage of the dictionaries; the exact
   amount of overhead may vary.
+- Query performance is measured after warming the cache (querying ever key once,
+  so it is stored in the CPU caches if possible). Worst-case query time is not
+  measured (but can easily be calculated from the number of loads from main
+  memory that a hash could use.).
 
-### Related data structures:
+### Related data structure projects:
 
 - https://github.com/beling/bsuccinct-rs
 - https://github.com/rust-phf/rust-phf
@@ -134,7 +141,18 @@ they deviate from the ideal constructions in the papers.
 - chainq: Query every element _in_ the dictionary, with a logical dependency
   between successive dictionary queries
 
+Summary plots showing _all_ results (for individual series, use `figures.py`):
+
 ![rand32 results](rand32.svg) ![rand64 results](rand64.svg)
+
+In general, dictionaries with faster query times take longer to construct; which
+to use depends on the tasks the dictionary is used for.
+
+- Fastest queries, slowest construction: Designs using multiply-shift hashing
+- Medium query and construction time: Ružić2009B universe reduction + HMP01
+  perfect hash
+- Fastest construction (for large inputs), slowest queries: Ružić2009B universe
+  reduction + Ružić2009A perfect hash
 
 ### Notes:
 
@@ -155,3 +173,10 @@ they deviate from the ideal constructions in the papers.
   - Algorithm 1 has light typos: `φ(q_start)` should be `φ(x_{q_start})`, and
     `(k+2)2^j < φ(x_q)` should be `(k+2)2^j ≤ φ(x_q)`
   - Algorithm 1 in the paper does not record the trailing leaf set
+- Multiply-shift hashing (Raman95):
+  - Directly using the multiply-shift hash with an `O(n^2)` output size table is
+    very fast for small input sizes, but the large table size renders the design
+    impractical. However, if one has many small hash tables, the size overhead
+    may not be a problem, because the hash tables resulting from this design are
+    sparse and one might be able to place multiple such tables overlapping in a
+    memory region, using different base offsets for the tables.

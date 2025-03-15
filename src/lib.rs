@@ -2,15 +2,23 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
+use std::ops::RangeInclusive;
 
 pub mod util;
 
 pub trait Dict<K, V> {
-    /** Construct a dictionary for the given key-value pairs. All keys must be unique */
-    fn new(data: &[(K, V)]) -> Self;
+    /** Construct a dictionary for the given key-value pairs. All keys must be unique
+     * and be < 1<<u_bits. */
+    fn new(data: &[(K, V)], u_bits: u32) -> Self;
     /** Find the value for a key, if one exists */
     fn query(&self, key: K) -> Option<V>;
 }
+
+// TODO: split _construction_ and _evaluation_ for perfect hash, to more easily share evaluation
+// procedures and allow comparing different construction methods (e.g., with varying approximation
+// parameters. Similarly, make a 'CollidingHash<K, V>' trait?)
+
+// One approach: parameterize HDict by <T: fn(&keys, u_bits )->PerfectHash>
 
 pub trait PerfectHash<K, V> {
     /** Construct a perfect hash for a set of _unique_ keys, where each key is <1<<u_bits. */
@@ -46,9 +54,9 @@ impl<T: PerfectHash<u128, u64>> PerfectHash<u64, u64> for T {
 }
 
 impl<H: PerfectHash<u64, u64>> Dict<u64, u64> for HDict<H> {
-    fn new(data: &[(u64, u64)]) -> Self {
+    fn new(data: &[(u64, u64)], u_bits: u32) -> Self {
         let keys: Vec<u64> = data.iter().map(|x| x.0).collect();
-        let hash = H::new(&keys, u64::BITS);
+        let hash = H::new(&keys, u_bits);
         drop(keys);
 
         if false {
@@ -111,7 +119,7 @@ where
 }
 
 impl<K: Ord + Clone, V: Clone> Dict<K, V> for BinSearchDict<K, V> {
-    fn new(data: &[(K, V)]) -> BinSearchDict<K, V> {
+    fn new(data: &[(K, V)], _u_bits: u32) -> BinSearchDict<K, V> {
         let mut d: Vec<(K, V)> = Vec::from_iter(data.iter().map(|x| (x.0.clone(), x.1.clone())));
         d.sort_by_key(|x| x.0.clone());
         BinSearchDict { data: d }
@@ -137,7 +145,7 @@ where
 }
 
 impl<K: Ord + Clone, V: Clone> Dict<K, V> for BTreeDict<K, V> {
-    fn new(data: &[(K, V)]) -> BTreeDict<K, V> {
+    fn new(data: &[(K, V)], _u_bits: u32) -> BTreeDict<K, V> {
         BTreeDict {
             data: BTreeMap::from_iter(data.iter().map(|x| (x.0.clone(), x.1.clone()))),
         }
@@ -159,7 +167,7 @@ where
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> Dict<K, V> for HashDict<K, V> {
-    fn new(data: &[(K, V)]) -> HashDict<K, V> {
+    fn new(data: &[(K, V)], _u_bits: u32) -> HashDict<K, V> {
         HashDict {
             data: HashMap::from_iter(data.iter().map(|x| (x.0.clone(), x.1.clone()))),
         }
@@ -590,7 +598,9 @@ fn test_hmp01_quad_hash() {
 }
 
 impl Dict<u64, u64> for HagerupMP01Dict {
-    fn new(data: &[(u64, u64)]) -> HagerupMP01Dict {
+    fn new(data: &[(u64, u64)], u_bits: u32) -> HagerupMP01Dict {
+        assert!(u_bits <= u32::BITS);
+
         // The paper technically special cases constant construction when 'n < w'
         // but in practice this is not important
         let ext_keys: Vec<u128> = data
@@ -733,7 +743,7 @@ fn test_hmp01_dict() {
     let x: Vec<(u64, u64)> = (0..(u16::MAX as u64))
         .map(|x| ((x * x) & (u32::MAX as u64), x))
         .collect();
-    let hash = HagerupMP01Dict::new(&x);
+    let hash = HagerupMP01Dict::new(&x, u32::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
@@ -743,46 +753,30 @@ fn test_hmp01_dict() {
 
 /** Like [HagerupMP01Dict], but skipping the universe reduction because it isn't that
  * useful when the word size is small. */
-pub struct HMP01UnreducedDict {
+pub struct IteratedHMP01Hash {
     /** Number of bits for steps to hash down to */
     r_bits: u32,
     /** Instead of using an implicit trie indexed by this hash, just use the hash
      * directly to reduce the input by iteratively mapping [2 log(n)]->[log n] bits */
     hashes: Vec<HMPQuadHash>,
-    /** Table of key-value pairs indexed by the perfect hash construction */
-    table: Vec<(u64, u64)>,
-    /** A value which is not a valid key */
-    non_key: u64,
 }
+pub type HMP01UnreducedDict = HDict<IteratedHMP01Hash>;
 
-impl Dict<u64, u64> for HMP01UnreducedDict {
-    fn new(data: &[(u64, u64)]) -> HMP01UnreducedDict {
-        let val_bits = data
-            .iter()
-            .map(|(k, _v)| (64 - k.leading_zeros()))
-            .max()
-            .unwrap();
-
-        let n_bits = data
-            .len()
-            .checked_next_power_of_two()
-            .unwrap()
-            .trailing_zeros();
+impl PerfectHash<u64, u64> for IteratedHMP01Hash {
+    fn new(keys: &[u64], u_bits: u32) -> IteratedHMP01Hash {
+        let n_bits = next_log_power_of_two(keys.len());
 
         let r_bits = n_bits + 1;
-        let steps = val_bits.max(1).div_ceil(r_bits) - 1;
+        let steps = u_bits.max(1).div_ceil(r_bits) - 1;
 
-        let mut lead: Vec<u64> = data
-            .iter()
-            .map(|(k, _v)| *k & ((1 << r_bits) - 1))
-            .collect();
+        let mut lead: Vec<u64> = keys.iter().map(|k| *k & ((1 << r_bits) - 1)).collect();
 
         let mut hashes: Vec<HMPQuadHash> = Vec::new();
         for round in 0..steps {
             let mut pairs: Vec<(u64, u64)> = lead
                 .iter()
-                .zip(data.iter())
-                .map(|(f, (k, _v))| (*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)))
+                .zip(keys.iter())
+                .map(|(f, k)| (*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)))
                 .collect();
 
             // Deduplicate pairs, because we do not yet know for certain if the quadratic reduction hash can handle them
@@ -801,50 +795,25 @@ impl Dict<u64, u64> for HMP01UnreducedDict {
 
             lead = lead
                 .iter()
-                .zip(data.iter())
-                .map(|(f, (k, _v))| {
-                    hash.query(*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1))
-                })
+                .zip(keys.iter())
+                .map(|(f, k)| hash.query(*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)))
                 .collect();
 
             hashes.push(hash);
         }
 
-        // Identify a value which is _not_ a valid key.
-        let mut is_key: Vec<bool> = vec![false; data.len()];
-        for (k, _v) in data {
-            if *k < data.len() as u64 {
-                is_key[*k as usize] = true;
-            }
-        }
-        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
-
-        // Fill table entries
-        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << r_bits];
-        for (i, v) in lead.iter().enumerate() {
-            table[*v as usize] = data[i];
-        }
-
-        HMP01UnreducedDict {
-            r_bits,
-            hashes,
-            table,
-            non_key,
-        }
+        IteratedHMP01Hash { r_bits, hashes }
     }
-    fn query(&self, key: u64) -> Option<u64> {
+    fn query(&self, key: u64) -> u64 {
         let mut val = key & ((1 << self.r_bits) - 1);
         for (i, h) in self.hashes.iter().enumerate() {
             let nxt = (key >> ((i as u32 + 1) * (self.r_bits))) & ((1 << self.r_bits) - 1);
             val = h.query(val, nxt);
         }
-
-        let entry = self.table[val as usize];
-        if entry.0 != key || key == self.non_key {
-            None
-        } else {
-            Some(entry.1)
-        }
+        val
+    }
+    fn output_bits(&self) -> u32 {
+        self.r_bits
     }
 }
 
@@ -853,7 +822,7 @@ fn test_hmp01_unreduced() {
     let x: Vec<(u64, u64)> = (0..(u16::MAX as u64))
         .map(|x| ((x * x * x * x), x))
         .collect();
-    let hash = HMP01UnreducedDict::new(&x);
+    let hash = HMP01UnreducedDict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
@@ -869,59 +838,394 @@ struct Ruzic09BReduction {
 }
 
 fn find_good_multiplier_fast(keys: &[u64], s: u32, max_mult_bits: u32) -> u64 {
-    // binary search to find multiplier
-    let mut low = 1u64; // skip 0, it makes collisions
-    let mut high = 1 << max_mult_bits;
+    fn f(x: u64, a: u64, s: u32) -> u64 {
+        (x >> s) + a * (x & ((1 << s) - 1))
+    }
 
-    fn est_bad_parameters(keys: &[u64], s: u32, low: u64, high: u64) -> u64 {
-        // TODO: this may be oversimplified and thus incorrect in some cases
-        // (e.g.: how should duplicates be handled?)
+    /* Get an upper bound, no more than 2x the actual value, of the number of colliding
+     * (real valued) parameters in the doubly-open range, counting multiplicities. */
+    fn est_bad_parameters(keys: &[u64], s: u32, parameters: RangeInclusive<u64>) -> u64 {
+        /* alternative approach: use rank queries? */
+        let (low, high) = parameters.into_inner();
+        if high <= low {
+            return 0;
+        }
+
+        /* cmp_h = h_x < h_y || (h_x == h_y && l_x < l_y)
+         * cmp_l = l_x < l_y || (l_x == l_y && (h_x < h_y || (h_x == h_y && l_x < l_y)))
+         *       = l_x < l_y || (l_x == l_y && h_x < h_y)
+         * (the simplification follows since l_x==l_y and h_x==h_y implies x=y.)
+         */
+
+        let key_cmp_low = |x, y| {
+            f(x, low, s) < f(y, low, s)
+                || (f(x, low, s) == f(y, low, s) && f(x, high, s) < f(y, high, s))
+        };
+        let key_cmp_high = |x, y| {
+            f(x, high, s) < f(y, high, s)
+                || (f(x, high, s) == f(y, high, s) && f(x, low, s) < f(y, low, s))
+        };
 
         let mut phi_indices: Vec<usize> = (0..keys.len()).collect();
         let mut f_indices: Vec<usize> = (0..keys.len()).collect();
-        // So: does unstable sorting just overestimate?
-        phi_indices.sort_unstable_by_key(|x| (keys[*x] >> s) + low * (keys[*x] & ((1 << s) - 1)));
-        f_indices.sort_unstable_by_key(|x| (keys[*x] >> s) + high * (keys[*x] & ((1 << s) - 1)));
+        phi_indices.sort_unstable_by(|i, j| {
+            if key_cmp_low(keys[*i], keys[*j]) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+        f_indices.sort_unstable_by(|i, j| {
+            if key_cmp_high(keys[*i], keys[*j]) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+
+        let mut f_inv: Vec<usize> = vec![0; keys.len()];
+        for (i, v) in f_indices.iter().enumerate() {
+            f_inv[*v] = i;
+        }
+        let mut pi_1 = vec![0u64; keys.len()];
+        for (i, v) in pi_1.iter_mut().enumerate() {
+            *v = f_inv[phi_indices[i]] as u64;
+        }
 
         // This overestimates inversions by up to a factor of 2
+        /* TODO: Chan + Patrascu provide an O(n/epsilon) time epsilon-approximation algorithm.
+         *
+         * (The paper claims an O(n) time approximation with epsilon
+         * = O(1/polylog(n)) is achievable, which _may_ lead to total
+         * O(1)-bit overhead in R09B's framework.)
+         */
         let mut est_invs = 0;
-        for (i_phi, i_f) in phi_indices.iter().zip(f_indices.iter()) {
-            est_invs += i_phi.abs_diff(*i_f) as u64;
+        for (i, v) in pi_1.iter().enumerate() {
+            est_invs += (i as u64).abs_diff(*v);
         }
         2 * est_invs
     }
 
-    // Does using n(n-1)/2 help in any case?
-    let mut bad_param_est = (keys.len().checked_mul(keys.len()).unwrap() / 2) as u64;
-    while low < high {
-        let mid = low + (high - low) / 2;
+    let mut low = 0;
+    let mut high = (1 << max_mult_bits) - 1;
 
-        let m1est = est_bad_parameters(keys, s, low, mid);
+    /* Upper bound on the number of bad parameters. */
+    let mut bad_param_est = (keys.len().checked_mul(keys.len()).unwrap() / 2) as u64;
+    while bad_param_est > 0 {
+        let mid = low + (high - low) / 2;
+        assert!(low < mid && mid < high);
+
+        let m1est = est_bad_parameters(keys, s, low..=mid);
         /* Each iteration should reduce the estimate to <= 2/3 of the previous value */
         if m1est <= (2 * bad_param_est) / 3 {
             high = mid;
         } else {
             low = mid;
         }
+        /* To keep the number of iterations nonadaptive/similar to the worst case
+         * behavior, reduce the bad parameter estimate only to what is guaranteed,
+         * not to m1est. */
         bad_param_est = (2 * bad_param_est) / 3;
     }
     assert!(bad_param_est == 0);
 
-    low
+    low + (high - low) / 2
+}
+
+/* Count the number of inversions in a permutation */
+fn count_inversions(perm: &[u64]) -> u64 {
+    /* Standard divide-and-conquer implementation.
+     *
+     * TODO: implement and compare: Chan & Pǎtraşcu 2010, "Counting Inversions,
+     * Offline Orthogonal Range Counting, and Related Problems"
+     */
+
+    fn sorted_merge(left: &[u64], right: &[u64], output: &mut [u64]) {
+        assert!(left.len() + right.len() == output.len());
+        assert!(left.len() >= 1 && right.len() >= 1);
+
+        let mut output_iter = output.iter_mut();
+        let mut left_iter = left.iter();
+        let mut right_iter = right.iter();
+
+        let mut left_val = *left_iter.next().unwrap();
+        let mut right_val = *right_iter.next().unwrap();
+
+        loop {
+            if left_val < right_val {
+                *output_iter.next().unwrap() = left_val;
+
+                if let Some(x) = left_iter.next() {
+                    left_val = *x;
+                } else {
+                    /* Only right values remaining */
+                    *output_iter.next().unwrap() = right_val;
+                    while let Some(y) = right_iter.next() {
+                        *output_iter.next().unwrap() = *y;
+                    }
+                    assert!(output_iter.next().is_none());
+                    return;
+                }
+            } else {
+                *output_iter.next().unwrap() = right_val;
+
+                if let Some(x) = right_iter.next() {
+                    right_val = *x;
+                } else {
+                    /* Only left values remaining */
+                    *output_iter.next().unwrap() = left_val;
+                    while let Some(y) = left_iter.next() {
+                        *output_iter.next().unwrap() = *y;
+                    }
+                    assert!(output_iter.next().is_none());
+                    return;
+                }
+            }
+        }
+    }
+
+    fn count_inv_rec(a: &mut [u64], scratch: &mut [u64]) -> u64 {
+        if a.len() <= 1 {
+            return 0;
+        }
+
+        let mid = a.len() / 2;
+        let (left, right) = a.split_at_mut(mid);
+        let inv_left = count_inv_rec(left, &mut scratch[..left.len()]);
+        let inv_right = count_inv_rec(right, &mut scratch[..right.len()]);
+
+        /* Number of inversions (where an element in `left` is greater than one in `right`. */
+        let mut inv_cross = 0;
+        /* right_pos is least index for which right[right_pos] > el */
+        let mut right_pos = 0;
+        for el in left.iter() {
+            while right_pos < right.len() && *el >= right[right_pos] {
+                right_pos += 1;
+            }
+
+            let nright_lt_el = right_pos as u64;
+            inv_cross += nright_lt_el;
+        }
+
+        sorted_merge(left, right, scratch);
+        a.copy_from_slice(scratch);
+
+        inv_left + inv_right + inv_cross
+    }
+
+    let mut mut_perm = Vec::from(perm);
+    /* Temporary buffer to merge lists in */
+    let mut scratch = vec![0u64; perm.len()];
+    let count = count_inv_rec(&mut mut_perm, &mut scratch);
+
+    if false {
+        /* brute force count */
+        let mut brute_count = 0;
+        for i in 0..perm.len() {
+            for j in 0..i {
+                if perm[j] > perm[i] {
+                    brute_count += 1;
+                }
+            }
+        }
+        assert!(brute_count == count);
+    }
+    count
+}
+
+fn find_good_multiplier_precise(keys: &[u64], s: u32, max_mult_bits: u32) -> u64 {
+    fn f(x: u64, a: u64, s: u32) -> u64 {
+        (x >> s) + a * (x & ((1 << s) - 1))
+    }
+
+    /** Count the number of collisions for a specific multiplier `a`.
+     *
+     * This _permutes_ the provided key array, but does not change its contents. */
+    fn count_collisions(keys: &mut [u64], a: u64, s: u32) -> u64 {
+        assert!(keys.len() <= u32::MAX as usize);
+
+        keys.sort_unstable_by_key(|k| f(*k, a, s));
+
+        /* count collisions for this value */
+        let mut ncoll = 0;
+        let mut class_start = 0;
+        // TODO: use an iterator
+        while class_start < keys.len() {
+            let mut class_end = class_start;
+            let cur_val = f(keys[class_start], a, s);
+            while class_end < keys.len() && f(keys[class_end], a, s) == cur_val {
+                class_end += 1;
+            }
+            let class_sz = (class_end - class_start) as u64;
+            ncoll += class_sz * (class_sz.max(1) - 1) / 2;
+            class_start = class_end;
+        }
+
+        ncoll
+    }
+
+    /** Count the number of bad (real-valued) parameters in the given doubly-open interval;
+     * this is an upper bound on the number of collisions occuring under integral parameters.
+     */
+    fn count_bad_parameters(keys: &[u64], s: u32, parameters: RangeInclusive<u64>) -> u64 {
+        /* alternative approach: use rank queries? */
+        let (low, high) = parameters.into_inner();
+        if high <= low {
+            return 0;
+        }
+
+        /* cmp_h = h_x < h_y || (h_x == h_y && l_x < l_y)
+         * cmp_l = l_x < l_y || (l_x == l_y && (h_x < h_y || (h_x == h_y && l_x < l_y)))
+         *       = l_x < l_y || (l_x == l_y && h_x < h_y)
+         * (the simplification follows since l_x==l_y and h_x==h_y implies x=y.)
+         */
+
+        let key_cmp_low = |x, y| {
+            f(x, low, s) < f(y, low, s)
+                || (f(x, low, s) == f(y, low, s) && f(x, high, s) < f(y, high, s))
+        };
+        let key_cmp_high = |x, y| {
+            f(x, high, s) < f(y, high, s)
+                || (f(x, high, s) == f(y, high, s) && f(x, low, s) < f(y, low, s))
+        };
+
+        let mut phi_indices: Vec<usize> = (0..keys.len()).collect();
+        let mut f_indices: Vec<usize> = (0..keys.len()).collect();
+        phi_indices.sort_unstable_by(|i, j| {
+            if key_cmp_low(keys[*i], keys[*j]) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+        f_indices.sort_unstable_by(|i, j| {
+            if key_cmp_high(keys[*i], keys[*j]) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+
+        let mut f_inv: Vec<usize> = vec![0; keys.len()];
+        for (i, v) in f_indices.iter().enumerate() {
+            f_inv[*v] = i;
+        }
+        let mut pi_1 = vec![0u64; keys.len()];
+        for (i, v) in pi_1.iter_mut().enumerate() {
+            *v = f_inv[phi_indices[i]] as u64;
+        }
+
+        let inv_count = count_inversions(&pi_1);
+        // println!("inv count: {:?}", inv_count);
+        if false {
+            /* Count the number of key pairs colliding in the target interval. */
+            let mut brute_count = 0;
+            for i in 0..keys.len() {
+                for j in 0..i {
+                    let (ki, kj) = (keys[i], keys[j]);
+                    let in_m1 = |x, y| f(x, low, s) < f(y, low, s) && f(x, high, s) > f(y, high, s);
+                    if in_m1(ki, kj) || in_m1(kj, ki) {
+                        brute_count += 1;
+                    }
+                }
+            }
+            assert!(inv_count == brute_count);
+
+            if false {
+                /* Count the number of _integral_ collisions. This runs in O(n^3) time */
+                let mut key_copy = Vec::from(keys);
+                let mut actual_m1: u64 = 0;
+                for a in low + 1..high {
+                    let ncoll = count_collisions(&mut key_copy, a, s);
+                    actual_m1 += ncoll;
+                }
+                assert!(actual_m1 <= inv_count);
+            }
+        }
+        inv_count
+    }
+
+    /* R09B binary searches in [1..(max_mult) - 1]; but 0 is also a valid
+     * multiplier, so check it. (The search procedure in fact also works
+     * for negative multipliers.) */
+    let mut low = 0;
+    let mut high = (1 << max_mult_bits) - 1;
+    let mut key_copy = Vec::from(keys);
+    let low_col = count_collisions(&mut key_copy, low, s);
+    let high_col = count_collisions(&mut key_copy, high, s);
+    let mut ok_multiplier = None;
+    if low_col == 0 {
+        /* This and the other short-circuit exits would make the reduction
+         * return _significantly_ faster then worst-case on random input,
+         * just as if we were to short-circuit test against a few random
+         * multipliers. To make performance more similar to the worst
+         * case, delay the choice of which output to make until the very
+         * end -- only using the short circuit value if the final `low`
+         * value has a collision. */
+        ok_multiplier = Some(low);
+    }
+    if high_col == 0 {
+        ok_multiplier = Some(high);
+    }
+
+    let mut bad_params = count_bad_parameters(keys, s, low..=high);
+    while low < high {
+        let mid = low + (high - low) / 2;
+
+        let mid_col = count_collisions(&mut key_copy, mid, s);
+        if mid_col == 0 {
+            ok_multiplier = Some(mid);
+        }
+
+        let col_bound_low = count_bad_parameters(keys, s, low..=mid);
+        let col_bound_high = count_bad_parameters(keys, s, mid..=high);
+
+        /* Total number of collisions in (low,high)=(low,mid)+mid+(mid, high) */
+        if low < mid && mid < high {
+            assert!(
+                col_bound_low + col_bound_high + mid_col == bad_params,
+                "{} {} {} | {} {} {} ?= {}",
+                low,
+                mid,
+                high,
+                col_bound_low,
+                col_bound_high,
+                mid_col,
+                bad_params
+            );
+        }
+
+        if col_bound_low <= col_bound_high {
+            high = mid;
+            bad_params = col_bound_low;
+        } else {
+            low = mid;
+            bad_params = col_bound_high;
+        }
+    }
+
+    let candidate_col = count_collisions(&mut key_copy, low, s);
+    if candidate_col == 0 {
+        low
+    } else {
+        assert!(ok_multiplier.is_some());
+        ok_multiplier.unwrap()
+    }
 }
 
 impl Ruzic09BReduction {
-    fn new_fast(kvs: &[(u64, u64)]) -> Ruzic09BReduction {
-        let mut keys: Vec<u64> = kvs.iter().map(|x| x.0).collect();
-        let n_bits = 64 - keys.len().leading_zeros();
-        let mut u_bits = 64;
-        let max_mult_bits = n_bits * 4; // more precisely, 2/log2(3/2) = 3.419
+    fn new_fast(keys: &[u64], mut u_bits: u32) -> Ruzic09BReduction {
+        let mut keys: Vec<u64> = Vec::from(keys);
+        let n_bits = next_log_power_of_two(keys.len());
 
-        // println!("n {} u {} mm {}", n_bits, u_bits, max_mult_bits);
+        let max_mult_bits = ((keys.len() as f64).log2() * 2.0 / 1.5_f64.log2()).ceil() as u32;
 
-        // Number of bits approaches 4*n_bits
+        // Number of bits approaches 3.42*n_bits
         let mut mults = Vec::new();
         while u_bits > max_mult_bits + n_bits {
+            assert!(max_mult_bits <= u64::BITS);
+
+            // TODO: choose s to minimize 'next_ubits'
             let s = (u_bits - max_mult_bits) / 2;
             let next_ubits = (u_bits - s).max(s + max_mult_bits) + 1;
             if next_ubits == u_bits {
@@ -939,14 +1243,14 @@ impl Ruzic09BReduction {
 
             u_bits = next_ubits;
 
-            if false {
+            if true {
                 // Verify multiplier actually works
                 let mut b = BTreeSet::new();
                 for k in keys.iter() {
                     assert!(b.insert(k), "duplicate value: {}", k);
                 }
             }
-            if false {
+            if true {
                 for k in keys.iter() {
                     assert!(k >> u_bits == 0);
                 }
@@ -959,11 +1263,73 @@ impl Ruzic09BReduction {
         }
     }
     #[allow(dead_code)]
-    fn new_precise(_kvs: &[(u64, u64)]) -> Ruzic09BReduction {
+    fn new_precise(kvs: &[u64], mut u_bits: u32) -> Ruzic09BReduction {
         /* There have been improvements to the problem of counting the number of permutation inversions;
          * since Ružić09 was written. See e.g. Chan & Pǎtraşcu 2010,
-         * "Counting Inversions, Offline Orthogonal Range Coutning, and Related Problems" */
-        todo!();
+         * "Counting Inversions, Offline Orthogonal Range Counting, and Related Problems" */
+        let mut keys: Vec<u64> = Vec::from(kvs);
+
+        if true {
+            let s = BTreeSet::from_iter(keys.iter());
+            assert!(s.len() == keys.len(), "invalid input, has duplicates");
+        }
+
+        let n_bits = next_log_power_of_two(keys.len());
+
+        if kvs.len() > u32::MAX as usize {
+            /*  */
+            return Ruzic09BReduction {
+                steps: vec![],
+                end_bits: u64::BITS,
+            };
+        }
+
+        /* A valid multiplier _exists_ in [0..n(n-1)/2+1); round search space up to nearest multiple of 2 */
+        let max_mult_bits =
+            next_log_power_of_two(kvs.len().checked_mul(kvs.len().max(1) - 1).unwrap() / 2 + 1);
+        assert!(max_mult_bits <= u64::BITS);
+
+        // Number of bits approaches 2*n_bits
+        let mut mults = Vec::new();
+        while u_bits > max_mult_bits + n_bits {
+            assert!(max_mult_bits <= u64::BITS);
+
+            // TODO: choose s to minimize 'next_ubits'
+            let s = (u_bits - max_mult_bits) / 2;
+            let next_ubits = (u_bits - s).max(s + max_mult_bits) + 1;
+            if next_ubits == u_bits {
+                /* at small n, `u_bits + max_mult_bits + n_bits` might always be true. */
+                break;
+            }
+
+            // println!("n {} u {} s {}", n_bits, u_bits, s);
+            let a = find_good_multiplier_precise(&keys, s, max_mult_bits);
+            mults.push((a, s));
+
+            for k in keys.iter_mut() {
+                *k = (*k >> s) + a * (*k & ((1 << s) - 1));
+            }
+
+            u_bits = next_ubits;
+
+            if true {
+                for k in keys.iter() {
+                    assert!(k >> u_bits == 0);
+                }
+            }
+            if false {
+                // Verify multiplier actually works
+                let mut b = BTreeSet::new();
+                for k in keys.iter() {
+                    assert!(b.insert(k), "duplicate value: {}", k);
+                }
+            }
+        }
+
+        Ruzic09BReduction {
+            steps: mults,
+            end_bits: u_bits,
+        }
     }
 
     fn apply(&self, mut key: u64) -> u64 {
@@ -974,123 +1340,82 @@ impl Ruzic09BReduction {
     }
 }
 
-pub struct R09BxHMP01Dict {
+pub struct R09BfxHMP01Hash {
     reduction: Ruzic09BReduction,
-
-    r_bits: u32,
-    // TODO: use a binary tree merge instead of a sequence of hashes
-    hashes: Vec<HMPQuadHash>,
-    /** Table of key-value capairs indexed by the perfect hash construction */
-    table: Vec<(u64, u64)>,
-    /** A value which is not a valid key */
-    non_key: u64,
+    // TODO: domain is [n^4 or n^5]; use a binary tree merge instead of a sequence of hashes
+    main_hash: IteratedHMP01Hash,
 }
+pub type R09BfxHMP01Dict = HDict<R09BfxHMP01Hash>;
 
-impl Dict<u64, u64> for R09BxHMP01Dict {
-    fn new(data: &[(u64, u64)]) -> R09BxHMP01Dict {
-        let reduction = Ruzic09BReduction::new_fast(data);
+impl PerfectHash<u64, u64> for R09BfxHMP01Hash {
+    fn new(data: &[u64], u_bits: u32) -> R09BfxHMP01Hash {
+        let reduction = Ruzic09BReduction::new_fast(&data, u_bits);
 
-        let reduced_data: Vec<(u64, u64)> = data
-            .iter()
-            .map(|(k, v)| (reduction.apply(*k), *v))
-            .collect();
+        let reduced_keys: Vec<u64> = data.iter().map(|k| reduction.apply(*k)).collect();
 
-        let n_bits = reduced_data
-            .len()
-            .checked_next_power_of_two()
-            .unwrap()
-            .trailing_zeros();
-        let r_bits = n_bits + 1;
-        let steps = reduction.end_bits.max(1).div_ceil(r_bits) - 1;
+        let main_hash = IteratedHMP01Hash::new(&reduced_keys, reduction.end_bits);
 
-        let mut lead: Vec<u64> = reduced_data
-            .iter()
-            .map(|(k, _v)| *k & ((1 << r_bits) - 1))
-            .collect();
-
-        let mut hashes: Vec<HMPQuadHash> = Vec::new();
-        for round in 0..steps {
-            let mut pairs: Vec<(u64, u64)> = lead
-                .iter()
-                .zip(reduced_data.iter())
-                .map(|(f, (k, _v))| (*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)))
-                .collect();
-
-            // Deduplicate pairs, because we do not yet know for certain if the quadratic reduction hash can handle them
-            // TODO: extract into a function and test independently
-            pairs.sort_unstable();
-            let mut w = 1;
-            for r in 1..pairs.len() {
-                if pairs[r] != pairs[w - 1] {
-                    pairs[w] = pairs[r];
-                    w += 1;
-                }
-            }
-            pairs.truncate(w);
-
-            let hash = HMPQuadHash::new(&pairs, r_bits);
-
-            lead = lead
-                .iter()
-                .zip(reduced_data.iter())
-                .map(|(f, (k, _v))| {
-                    hash.query(*f, (*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1))
-                })
-                .collect();
-
-            hashes.push(hash);
-        }
-
-        // Identify a value which is _not_ a valid key.
-        let mut is_key: Vec<bool> = vec![false; data.len()];
-        for (k, _v) in data {
-            if *k < data.len() as u64 {
-                is_key[*k as usize] = true;
-            }
-        }
-        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
-
-        // Fill table entries
-        let r_bits = hashes[0].r_bits;
-        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << r_bits];
-        for (i, v) in lead.iter().enumerate() {
-            table[*v as usize] = data[i];
-        }
-
-        R09BxHMP01Dict {
+        R09BfxHMP01Hash {
             reduction,
-            r_bits,
-            hashes,
-            table,
-            non_key,
+            main_hash,
         }
     }
-    fn query(&self, key: u64) -> Option<u64> {
+    fn query(&self, key: u64) -> u64 {
         let d = self.reduction.apply(key);
-        let mut val = d & ((1 << self.r_bits) - 1);
-        // TODO: better construction than iterative
-        for (i, h) in self.hashes.iter().enumerate() {
-            let nxt = (d >> ((i as u32 + 1) * (self.r_bits))) & ((1 << self.r_bits) - 1);
-            val = h.query(val, nxt);
+        self.main_hash.query(d)
+    }
+
+    fn output_bits(&self) -> u32 {
+        self.main_hash.output_bits()
+    }
+}
+
+pub struct R09BpxHMP01Hash {
+    reduction: Ruzic09BReduction,
+    // TODO: domain should be [O(n^3)], explicitly use just two hashes
+    main_hash: IteratedHMP01Hash,
+}
+pub type R09BpxHMP01Dict = HDict<R09BpxHMP01Hash>;
+
+impl PerfectHash<u64, u64> for R09BpxHMP01Hash {
+    fn new(data: &[u64], u_bits: u32) -> R09BpxHMP01Hash {
+        let reduction = Ruzic09BReduction::new_precise(&data, u_bits);
+
+        let reduced_keys: Vec<u64> = data.iter().map(|k| reduction.apply(*k)).collect();
+
+        let main_hash = IteratedHMP01Hash::new(&reduced_keys, reduction.end_bits);
+
+        R09BpxHMP01Hash {
+            reduction,
+            main_hash,
         }
-        let entry = self.table[val as usize];
-        if entry.0 != key || key == self.non_key {
-            None
-        } else {
-            Some(entry.1)
-        }
+    }
+    fn query(&self, key: u64) -> u64 {
+        let d = self.reduction.apply(key);
+        self.main_hash.query(d)
+    }
+
+    fn output_bits(&self) -> u32 {
+        self.main_hash.output_bits()
     }
 }
 
 #[test]
 fn test_r09xhmp01_dict() {
+    let x: Vec<(u64, u64)> = (0..(1 << 5) as u64)
+        .map(|x| ((x * 13) % (1 << 6), x))
+        .collect();
+    let hash = R09BfxHMP01Dict::new(&x, u64::BITS);
+    for (k, v) in x {
+        assert!(Some(v) == hash.query(k));
+    }
     let x: Vec<(u64, u64)> = (0..(u8::MAX as u64)).map(|x| (x.pow(8), x)).collect();
-    let hash = R09BxHMP01Dict::new(&x);
+    let hash = R09BfxHMP01Dict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
     let x: Vec<(u64, u64)> = (0..(1u64 << 10)).map(|x| (x.pow(6), x)).collect();
-    let hash = R09BxHMP01Dict::new(&x);
+    let hash = R09BfxHMP01Dict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
@@ -1431,19 +1756,19 @@ fn test_xor_table_entry() {
 }
 
 impl Dict<u64, u64> for XorReducedDict {
-    fn new(data: &[(u64, u64)]) -> Self {
+    fn new(data: &[(u64, u64)], u_bits: u32) -> Self {
         let n_bits = next_log_power_of_two(data.len());
         let r_bits = n_bits + 1;
 
         let mut xor_table = Vec::new();
-        let mask_kp01 = if 2 * r_bits < u64::BITS {
+        let mask_kp01 = if 2 * r_bits < u_bits {
             (1 << (2 * r_bits)) - 1
         } else {
             u64::MAX
         };
         let mut comp_keys: Vec<u128> = data.iter().map(|x| (x.0 & mask_kp01) as u128).collect();
 
-        for i in 2..u64::BITS.div_ceil(r_bits) {
+        for i in 2..u_bits.div_ceil(r_bits) {
             let next: Vec<u64> = data
                 .iter()
                 .map(|kv| (kv.0 >> (r_bits * i)) & ((1 << r_bits) - 1))
@@ -1525,7 +1850,7 @@ impl Dict<u64, u64> for XorReducedDict {
 #[test]
 fn test_xor_reduced_dict() {
     let x: Vec<(u64, u64)> = (0..(u8::MAX as u64)).map(|x| (x.pow(8), x)).collect();
-    let hash = XorReducedDict::new(&x);
+    let hash = XorReducedDict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(
             Some(v) == hash.query(k),
@@ -1536,7 +1861,7 @@ fn test_xor_reduced_dict() {
         );
     }
     let x: Vec<(u64, u64)> = (0..(1u64 << 10)).map(|x| (x.pow(6), x)).collect();
-    let hash = XorReducedDict::new(&x);
+    let hash = XorReducedDict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
@@ -2164,7 +2489,7 @@ impl Ruzic09AHash {
 
                 b2.push((*k, free_i as u64));
             }
-            bucket_hashes.push(Some(Raman95Dict::new(&b2)));
+            bucket_hashes.push(Some(Raman95Dict::new(&b2, u64::BITS)));
         }
 
         // println!(
@@ -2255,8 +2580,11 @@ pub struct Ruzic09Dict {
 }
 
 impl Dict<u64, u64> for Ruzic09Dict {
-    fn new(data: &[(u64, u64)]) -> Ruzic09Dict {
-        let reduction = Ruzic09BReduction::new_fast(data);
+    fn new(data: &[(u64, u64)], u_bits: u32) -> Ruzic09Dict {
+        let keys: Vec<u64> = data.iter().map(|(k, _v)| *k).collect();
+
+        let reduction = Ruzic09BReduction::new_fast(&keys, u_bits);
+        drop(keys);
 
         let reduced_data: Vec<(u64, u64)> = data
             .iter()
@@ -2374,12 +2702,12 @@ impl Dict<u64, u64> for Ruzic09Dict {
 #[test]
 fn test_ruzic09_dict() {
     let x: Vec<(u64, u64)> = (0..(1u64 << 8)).map(|x| (x.wrapping_pow(8), x)).collect();
-    let hash = Ruzic09Dict::new(&x);
+    let hash = Ruzic09Dict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
     let x: Vec<(u64, u64)> = (0..(1u64 << 10)).map(|x| (x.wrapping_pow(6), x)).collect();
-    let hash = Ruzic09Dict::new(&x);
+    let hash = Ruzic09Dict::new(&x, u64::BITS);
     for (k, v) in x {
         assert!(Some(v) == hash.query(k));
     }
@@ -3642,6 +3970,9 @@ impl PerfectHash<u64, u64> for OMSxFKSHash {
     fn query(&self, key: u64) -> u64 {
         let index = self.primary_hash.query(key);
         let (hash2, offset) = &self.secondary_hashes[index as usize];
+        /* Note: could also use the lower bit portion of the primary hash
+         * as the secondary key. This would have fewer bits and be slightly
+         * faster to construct, but may slow down evaluation. */
         let index2 = hash2.query(key);
         index2 + offset
     }

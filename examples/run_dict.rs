@@ -22,8 +22,9 @@ where
     where
         Self: Sized,
     {
-        assert!(u_bits == u64::BITS);
-        Box::new(DictTrialImpl { dict: H::new(data) })
+        Box::new(DictTrialImpl {
+            dict: H::new(data, u_bits),
+        })
     }
     #[inline(never)]
     fn test_par(&self, queries: &[u64]) {
@@ -60,7 +61,8 @@ fn main() {
         "hash" => DictTrialImpl::<HashDict<u64, u64>>::new(&data, u_bits),
         "hmp01" => DictTrialImpl::<HagerupMP01Dict>::new(&data, u_bits),
         "iter+hmp01" => DictTrialImpl::<HMP01UnreducedDict>::new(&data, u_bits),
-        "r09b+hmp01" => DictTrialImpl::<R09BxHMP01Dict>::new(&data, u_bits),
+        "r09f+hmp01" => DictTrialImpl::<R09BfxHMP01Dict>::new(&data, u_bits),
+        "r09p+hmp01" => DictTrialImpl::<R09BpxHMP01Dict>::new(&data, u_bits),
         "xor+hmp01" => DictTrialImpl::<XorReducedDict>::new(&data, u_bits),
         "oms+hmp01" => DictTrialImpl::<OMSxHMP01Dict>::new(&data, u_bits),
         "oms+fks" => DictTrialImpl::<OMSxFKSDict>::new(&data, u_bits),
