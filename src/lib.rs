@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
 use std::ops::RangeInclusive;
 
+use rand::SeedableRng;
+
 pub mod util;
 
 pub trait Dict<K, V> {
@@ -12,11 +14,24 @@ pub trait Dict<K, V> {
     fn new(data: &[(K, V)], u_bits: u32) -> Self;
     /** Find the value for a key, if one exists */
     fn query(&self, key: K) -> Option<V>;
+    /** Worst-case number of "reads to main memory" (read operations from large tables
+     * which vary as a function of the input; does not include data contained in the
+     * struct itself or which is read on every query.).
+     *
+     * This is _not_ the longest critical chain of reads; rather than approximating
+     * the _latency_ of entirely uncached queries, it approximates the memory line
+     *
+     * Returns None if no fixed bound */
+    fn max_memory_read(&self) -> Option<u32>;
+    /* Total memory usage estimate (_including_ the size of this structure). None if not available.
+     * This is the _ideal_ space estimate, excluding spare capacity from allocations.
+     */
+    fn total_memory_usage(&self) -> Option<usize>;
 }
 
 // TODO: split _construction_ and _evaluation_ for perfect hash, to more easily share evaluation
 // procedures and allow comparing different construction methods (e.g., with varying approximation
-// parameters. Similarly, make a 'CollidingHash<K, V>' trait?)
+// parameters. or to compare deterministic with randomized construction performance.) Similarly, make a 'CollidingHash<K, V>' trait?)
 
 // One approach: parameterize HDict by <T: fn(&keys, u_bits )->PerfectHash>
 
@@ -27,6 +42,11 @@ pub trait PerfectHash<K, V> {
     fn query(&self, key: K) -> V;
     /** Number of output bits */
     fn output_bits(&self) -> u32;
+    /** Worst-case number of "reads to main memory", None if no fixed bound. */
+    fn max_memory_read(&self) -> Option<u32>;
+    /* Total memory usage estimate (_including_ the size of this structure). None if not available.
+     * This is the _ideal_ space estimate, excluding spare capacity from allocations.*/
+    fn total_memory_usage(&self) -> Option<usize>;
 }
 
 /* ---------------------------------------------------------------------------- */
@@ -50,6 +70,12 @@ impl<T: PerfectHash<u128, u64>> PerfectHash<u64, u64> for T {
     }
     fn output_bits(&self) -> u32 {
         PerfectHash::<u128, u64>::output_bits(self)
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        PerfectHash::<u128, u64>::max_memory_read(self)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        PerfectHash::<u128, u64>::total_memory_usage(self)
     }
 }
 
@@ -99,6 +125,16 @@ impl<H: PerfectHash<u64, u64>> Dict<u64, u64> for HDict<H> {
             Some(entry.1)
         }
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        self.hash.max_memory_read().map(|x| x + 1)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        let hash_space = self.hash.total_memory_usage()?;
+        let mut space = std::mem::size_of::<Self>() - std::mem::size_of::<H>();
+        space += self.table.len() * std::mem::size_of::<(u64, u64)>();
+        space += hash_space;
+        Some(space)
+    }
 }
 
 /* ---------------------------------------------------------------------------- */
@@ -131,6 +167,14 @@ impl<K: Ord + Clone, V: Clone> Dict<K, V> for BinSearchDict<K, V> {
             None
         }
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        /* Each binary search step reduces the space searched by half; complete at size 1.
+         * Technically the last few steps are in the same cache line. */
+        Some(next_log_power_of_two(self.data.len()))
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(self.data.len() * std::mem::size_of::<(K, V)>() + std::mem::size_of::<Self>())
+    }
 }
 
 /* ---------------------------------------------------------------------------- */
@@ -152,6 +196,13 @@ impl<K: Ord + Clone, V: Clone> Dict<K, V> for BTreeDict<K, V> {
     }
     fn query(&self, key: K) -> Option<V> {
         self.data.get(&key).cloned()
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        /* The maximum depth depends on the branching factor and the balancing logic. */
+        None
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        None
     }
 }
 
@@ -175,11 +226,22 @@ impl<K: Hash + Eq + Clone, V: Clone> Dict<K, V> for HashDict<K, V> {
     fn query(&self, key: K) -> Option<V> {
         self.data.get(&key).cloned()
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        /* Closed hash table with quadratic probing; max number of reads depends on
+         * collisions, which could be up to O(n) worst case unless specific
+         * countermeasures are made; but should be O(log n) w.h.p. */
+        None
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        /* The actual table stores a (K,V) array plus an array of "control bytes"
+         * (at least 1 per table entry, possibly rounded up for SIMD.) */
+        None
+    }
 }
 
 /* ---------------------------------------------------------------------------- */
 
-pub struct HagerupMP01Dict {
+pub struct HagerupMP01Hash {
     /** Mask indicating which bits of the encoded input to use. */
     distinguishing_bits: u128,
     /** Number of bits for steps to hash down to */
@@ -187,11 +249,9 @@ pub struct HagerupMP01Dict {
     /** Instead of using an implicit trie indexed by this hash, just use the hash
      * directly to reduce the input by iteratively mapping [2 log(n)]->[log n] bits */
     hashes: Vec<HMPQuadHash>,
-    /** Table of key-value pairs indexed by the perfect hash construction */
-    table: Vec<(u64, u64)>,
-    /** A value which is not a valid key */
-    non_key: u64,
 }
+
+pub type HagerupMP01Dict = HDict<HagerupMP01Hash>;
 
 /** Error correcting code from u32->u128 with ẟ = 30/128. */
 fn error_correcting_code(x: u32) -> u128 {
@@ -563,6 +623,16 @@ impl HMPQuadHash {
     fn query(&self, f: u64, g: u64) -> u64 {
         f ^ self.disp_1[(g ^ self.disp_0[f as usize]) as usize]
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        Some(2)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(
+            std::mem::size_of::<Self>()
+                + self.disp_0.len() * std::mem::size_of::<u64>()
+                + self.disp_1.len() * std::mem::size_of::<u64>(),
+        )
+    }
 }
 
 /** Given: given input pairs (f, g) where the f and g are both unique, with no collisions, check that running
@@ -597,15 +667,15 @@ fn test_hmp01_quad_hash() {
     }
 }
 
-impl Dict<u64, u64> for HagerupMP01Dict {
-    fn new(data: &[(u64, u64)], u_bits: u32) -> HagerupMP01Dict {
+impl PerfectHash<u64, u64> for HagerupMP01Hash {
+    fn new(keys: &[u64], u_bits: u32) -> HagerupMP01Hash {
         assert!(u_bits <= u32::BITS);
 
         // The paper technically special cases constant construction when 'n < w'
         // but in practice this is not important
-        let ext_keys: Vec<u128> = data
+        let ext_keys: Vec<u128> = keys
             .iter()
-            .map(|(k, _v)| {
+            .map(|k| {
                 // require inputs of size <u32::MAX, for now
                 let sk: u32 = (*k).try_into().unwrap();
                 error_correcting_code(sk)
@@ -613,15 +683,15 @@ impl Dict<u64, u64> for HagerupMP01Dict {
             .collect();
         let d = find_distinguishing_positions(&ext_keys);
 
-        let reduced_data: Vec<(u128, u64)> = data
+        let reduced_keys: Vec<u128> = keys
             .iter()
-            .map(|(k, v)| {
+            .map(|k| {
                 let sk: u32 = (*k).try_into().unwrap();
-                (util::pext(error_correcting_code(sk), d), *v)
+                util::pext(error_correcting_code(sk), d)
             })
             .collect();
 
-        let n_bits = reduced_data
+        let n_bits = reduced_keys
             .len()
             .checked_next_power_of_two()
             .unwrap()
@@ -633,7 +703,7 @@ impl Dict<u64, u64> for HagerupMP01Dict {
             "val bits {} n bits {} | {}",
             val_bits,
             n_bits,
-            data.len()
+            reduced_keys.len()
         );
 
         let r_bits = n_bits + 1;
@@ -641,9 +711,9 @@ impl Dict<u64, u64> for HagerupMP01Dict {
         /* Instead of implicitly encoding a trie (Tarjan+Yao approach, recommended by
          * HMP01), use the trick mentioned by Ružić09 to peel off r_bits at a time.
          * This should reduce indirection. */
-        let mut lead: Vec<u64> = reduced_data
+        let mut lead: Vec<u64> = reduced_keys
             .iter()
-            .map(|(k, _v)| (*k & ((1 << r_bits) - 1)) as u64)
+            .map(|k| (*k & ((1 << r_bits) - 1)) as u64)
             .collect();
 
         let mut hashes: Vec<HMPQuadHash> = Vec::new();
@@ -653,8 +723,8 @@ impl Dict<u64, u64> for HagerupMP01Dict {
         for round in 0..5 {
             let mut pairs: Vec<(u64, u64)> = lead
                 .iter()
-                .zip(reduced_data.iter())
-                .map(|(f, (k, _v))| {
+                .zip(reduced_keys.iter())
+                .map(|(f, k)| {
                     (
                         *f,
                         ((*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)) as u64,
@@ -678,8 +748,8 @@ impl Dict<u64, u64> for HagerupMP01Dict {
 
             lead = lead
                 .iter()
-                .zip(reduced_data.iter())
-                .map(|(f, (k, _v))| {
+                .zip(reduced_keys.iter())
+                .map(|(f, k)| {
                     hash.query(
                         *f,
                         ((*k >> (r_bits * (round + 1))) & ((1 << r_bits) - 1)) as u64,
@@ -690,51 +760,47 @@ impl Dict<u64, u64> for HagerupMP01Dict {
             hashes.push(hash);
         }
 
-        // Identify a value which is _not_ a valid key.
-        let mut is_key: Vec<bool> = vec![false; data.len()];
-        for (k, _v) in data {
-            if *k < data.len() as u64 {
-                is_key[*k as usize] = true;
-            }
-        }
-        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
-
-        // Fill table entries
         let r_bits = hashes[0].r_bits;
-        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << r_bits];
-        for (i, v) in lead.iter().enumerate() {
-            table[*v as usize] = data[i];
-        }
-
-        HagerupMP01Dict {
+        HagerupMP01Hash {
             distinguishing_bits: d,
             r_bits,
             hashes,
-            table,
-            non_key,
         }
     }
-    fn query(&self, key: u64) -> Option<u64> {
+    fn query(&self, key: u64) -> u64 {
         assert!(key <= u32::MAX as u64);
         // First, reduce universe
         let k: u32 = key.try_into().unwrap();
         let d = util::pext(error_correcting_code(k), self.distinguishing_bits);
 
         let mut val = (d & ((1 << self.r_bits) - 1)) as u64;
+        /* Note: to reduce end-to-end latency, when there are >=4 parts, there are better desig*ns
+         * than plain iteration; using e.g. balanced binary tree construction ((0,1),(2,3)) would
+         * reduce the depth. (Although it requires double displacement to do symmetric merges.)
+         */
         for (i, h) in self.hashes.iter().enumerate() {
             let nxt = ((d >> ((i as u32 + 1) * (self.r_bits))) & ((1 << self.r_bits) - 1)) as u64;
             val = h.query(val, nxt);
         }
-        // Note: to reduce end-to-end latency, when there are >=4 parts, there are better designs
-        // than plain iteration; using e.g. balanced binary tree construction ((0,1),(2,3)) would
-        // reduce the depth. (Although it requires double displacement to do symmetric merges.)
 
-        let entry = self.table[val as usize];
-        if entry.0 != key || key == self.non_key {
-            None
-        } else {
-            Some(entry.1)
+        val
+    }
+    fn output_bits(&self) -> u32 {
+        self.r_bits
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        let mut x = 0;
+        for h in self.hashes.iter() {
+            x += h.max_memory_read().unwrap();
         }
+        Some(x)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>();
+        for h in self.hashes.iter() {
+            space += h.total_memory_usage().unwrap();
+        }
+        Some(space)
     }
 }
 
@@ -815,6 +881,20 @@ impl PerfectHash<u64, u64> for IteratedHMP01Hash {
     fn output_bits(&self) -> u32 {
         self.r_bits
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        let mut x = 0;
+        for h in self.hashes.iter() {
+            x += h.max_memory_read().unwrap();
+        }
+        Some(x)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>();
+        for h in self.hashes.iter() {
+            space += h.total_memory_usage().unwrap();
+        }
+        Some(space)
+    }
 }
 
 #[test]
@@ -837,6 +917,7 @@ struct Ruzic09BReduction {
     end_bits: u32,
 }
 
+#[inline(never)]
 fn find_good_multiplier_fast(keys: &[u64], s: u32, max_mult_bits: u32) -> u64 {
     fn f(x: u64, a: u64, s: u32) -> u64 {
         (x >> s) + a * (x & ((1 << s) - 1))
@@ -1033,6 +1114,7 @@ fn count_inversions(perm: &[u64]) -> u64 {
     count
 }
 
+#[inline(never)]
 fn find_good_multiplier_precise(keys: &[u64], s: u32, max_mult_bits: u32) -> u64 {
     fn f(x: u64, a: u64, s: u32) -> u64 {
         (x >> s) + a * (x & ((1 << s) - 1))
@@ -1338,6 +1420,10 @@ impl Ruzic09BReduction {
         }
         key
     }
+
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>() + self.steps.len() * std::mem::size_of::<(u64, u32)>())
+    }
 }
 
 pub struct R09BfxHMP01Hash {
@@ -1368,6 +1454,17 @@ impl PerfectHash<u64, u64> for R09BfxHMP01Hash {
     fn output_bits(&self) -> u32 {
         self.main_hash.output_bits()
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        self.main_hash.max_memory_read()
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>()
+            - std::mem::size_of_val(&self.reduction)
+            - std::mem::size_of_val(&self.main_hash);
+        space += self.reduction.total_memory_usage().unwrap();
+        space += self.main_hash.total_memory_usage().unwrap();
+        Some(space)
+    }
 }
 
 pub struct R09BpxHMP01Hash {
@@ -1397,6 +1494,18 @@ impl PerfectHash<u64, u64> for R09BpxHMP01Hash {
 
     fn output_bits(&self) -> u32 {
         self.main_hash.output_bits()
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        self.main_hash.max_memory_read()
+    }
+
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>()
+            - std::mem::size_of_val(&self.reduction)
+            - std::mem::size_of_val(&self.main_hash);
+        space += self.reduction.total_memory_usage().unwrap();
+        space += self.main_hash.total_memory_usage().unwrap();
+        Some(space)
     }
 }
 
@@ -1433,7 +1542,7 @@ fn test_r09xhmp01_dict() {
  * TODO: make generic and replace u128/u64 with smallest types that fit 2*r_bits and r_bits
  *
  * Requires: key space <2^64. */
-pub struct XorReducedDict {
+pub struct XorReducedHash {
     /** For [2^r]^k -> [2^{2r}], this table has 'k-2' entries; the processing for the
      * first two table entries is explicit.
      *
@@ -1442,9 +1551,9 @@ pub struct XorReducedDict {
     xor_table: Vec<Vec<u128>>,
     quad: HMPQuadHash,
     r_bits: u32,
-    table: Vec<(u64, u64)>,
-    non_key: u64,
 }
+
+pub type XorReducedDict = HDict<XorReducedHash>;
 
 /** Return value `x` so that $A \cap {b \oplus x}_{x \in B} = \emptyset$.
  *
@@ -1755,8 +1864,8 @@ fn test_xor_table_entry() {
     );
 }
 
-impl Dict<u64, u64> for XorReducedDict {
-    fn new(data: &[(u64, u64)], u_bits: u32) -> Self {
+impl PerfectHash<u64, u64> for XorReducedHash {
+    fn new(data: &[u64], u_bits: u32) -> Self {
         let n_bits = next_log_power_of_two(data.len());
         let r_bits = n_bits + 1;
 
@@ -1766,16 +1875,16 @@ impl Dict<u64, u64> for XorReducedDict {
         } else {
             u64::MAX
         };
-        let mut comp_keys: Vec<u128> = data.iter().map(|x| (x.0 & mask_kp01) as u128).collect();
+        let mut comp_keys: Vec<u128> = data.iter().map(|x| (x & mask_kp01) as u128).collect();
 
         for i in 2..u_bits.div_ceil(r_bits) {
             let next: Vec<u64> = data
                 .iter()
-                .map(|kv| (kv.0 >> (r_bits * i)) & ((1 << r_bits) - 1))
+                .map(|k| (*k >> (r_bits * i)) & ((1 << r_bits) - 1))
                 .collect();
             let table = construct_xor_table_entry(&comp_keys, &next, r_bits);
-            for (c, kv) in comp_keys.iter_mut().zip(data.iter()) {
-                let kp = (kv.0 >> (r_bits * i)) & ((1 << r_bits) - 1);
+            for (c, k) in comp_keys.iter_mut().zip(data.iter()) {
+                let kp = (*k >> (r_bits * i)) & ((1 << r_bits) - 1);
                 *c = *c ^ table[kp as usize];
             }
             xor_table.push(table);
@@ -1791,34 +1900,14 @@ impl Dict<u64, u64> for XorReducedDict {
             .collect();
 
         let quad = HMPQuadHash::new(&pairs, r_bits);
-        let keys: Vec<u64> = pairs.iter().map(|x| quad.query(x.0, x.1)).collect();
 
-        // TODO: extract this table setup into a common function (or: create a PerfectHash
-        // trait from which dictionaries can be generically derived)
-
-        // Identify a value which is _not_ a valid key.
-        let mut is_key: Vec<bool> = vec![false; data.len()];
-        for kv in data.iter() {
-            if kv.0 < data.len() as u64 {
-                is_key[kv.0 as usize] = true;
-            }
-        }
-        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
-        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << r_bits];
-        for (k, p) in keys.iter().zip(data.iter()) {
-            assert!(table[*k as usize].0 == non_key);
-            table[*k as usize] = *p;
-        }
-
-        XorReducedDict {
+        XorReducedHash {
             xor_table,
             quad,
             r_bits,
-            table,
-            non_key,
         }
     }
-    fn query(&self, key: u64) -> Option<u64> {
+    fn query(&self, key: u64) -> u64 {
         let mut x = 0;
 
         let rmask = (1 << self.r_bits) - 1;
@@ -1838,12 +1927,22 @@ impl Dict<u64, u64> for XorReducedDict {
             (x & ((1 << self.r_bits) - 1)) as u64,
             (x >> self.r_bits) as u64,
         );
-        let entry = self.table[idx as usize];
-        if entry.0 != key || key == self.non_key {
-            None
-        } else {
-            Some(entry.1)
+        idx
+    }
+    fn output_bits(&self) -> u32 {
+        self.r_bits
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        /* 2 for double displacement hash, one per table entry */
+        Some(2 + self.xor_table.len() as u32)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>() - std::mem::size_of::<HMPQuadHash>();
+        space += self.quad.total_memory_usage().unwrap();
+        for t in self.xor_table.iter() {
+            space += std::mem::size_of_val(&t) + t.len() * std::mem::size_of::<u64>();
         }
+        Some(space)
     }
 }
 
@@ -2531,7 +2630,7 @@ impl Ruzic09AHash {
             // TODO: using (h, upper) and the displacement table, one can
             // derive the original key, since `lower = h XOR disp[upper]`.
             // Therefore: it suffices for this inner hash function to query
-            // _just_ using the (much fewer) upper bits
+            // _just_ using the (much fewer) upper bits.
             v.query(k.try_into().unwrap()).unwrap_or(0)
             // If no match, the value does not matter
         } else {
@@ -2540,6 +2639,24 @@ impl Ruzic09AHash {
             let v = self.fallback_hash.query(fhi, flo);
             v
         }
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        /* displacement (1), bucket (1), fallback (2) */
+        Some(4)
+    }
+
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>() - std::mem::size_of_val(&self.fallback_hash);
+        space += self.fallback_hash.total_memory_usage().unwrap();
+        space += self.displacement.len() * std::mem::size_of::<u64>();
+        for ob in self.bucket_hashes.iter() {
+            space += std::mem::size_of_val(&ob);
+            if let Some(ref b) = ob {
+                space += b.total_memory_usage().unwrap() - std::mem::size_of_val(&b);
+            }
+        }
+
+        Some(space)
     }
 }
 
@@ -2566,37 +2683,28 @@ fn test_ruzic09a_hash() {
 
 // Dictionary: start with 'unreduced' style
 
-pub struct Ruzic09Dict {
+pub struct Ruzic09Hash {
     reduction: Ruzic09BReduction,
     hashes: Vec<Ruzic09AHash>,
 
     u_bits: u32,
     output_bits: u32,
-
-    /** Table of key-value pairs indexed by the perfect hash construction */
-    table: Vec<(u64, u64)>,
-    /** A value which is not a valid key */
-    non_key: u64,
 }
 
-impl Dict<u64, u64> for Ruzic09Dict {
-    fn new(data: &[(u64, u64)], u_bits: u32) -> Ruzic09Dict {
-        let keys: Vec<u64> = data.iter().map(|(k, _v)| *k).collect();
+pub type Ruzic09Dict = HDict<Ruzic09Hash>;
 
+impl PerfectHash<u64, u64> for Ruzic09Hash {
+    fn new(keys: &[u64], u_bits: u32) -> Ruzic09Hash {
         let reduction = Ruzic09BReduction::new_fast(&keys, u_bits);
-        drop(keys);
 
-        let reduced_data: Vec<(u64, u64)> = data
-            .iter()
-            .map(|(k, v)| (reduction.apply(*k), *v))
-            .collect();
+        let reduced_keys: Vec<u64> = keys.iter().map(|k| reduction.apply(*k)).collect();
 
         /* Minimum size for construction to _work_ is 10, but then only one bit is removed per hash
          * iteration; n_bits >= 13 is needed to ensure >= 4 bits/iteration. Ultimately, increasing
          * n_bits will speed up the low end, at the cost of memory overhead. */
         // TODO: try memory-parameterized benchmarking to find pareto-optimal hyperparameters across all dictionary types?
         const MIN_N_BITS: u32 = 10;
-        let n_bits = next_log_power_of_two(reduced_data.len()).max(MIN_N_BITS);
+        let n_bits = next_log_power_of_two(reduced_keys.len()).max(MIN_N_BITS);
 
         let (u_bits, output_bits, _psi_bits, _phi_bits, _f_bits, _r_bits) =
             get_r09a_hash_bits(n_bits);
@@ -2618,17 +2726,17 @@ impl Dict<u64, u64> for Ruzic09Dict {
         };
 
         // println!("n: {} u: {} output: {}, steps: {}", n_bits, u_bits, output_bits, steps);
-        let mut lead: Vec<u64> = reduced_data
+        let mut lead: Vec<u64> = reduced_keys
             .iter()
-            .map(|(k, _v)| *k & ((1 << u_bits) - 1))
+            .map(|k| *k & ((1 << u_bits) - 1))
             .collect();
 
         let mut hashes: Vec<Ruzic09AHash> = Vec::new();
         for round in 0..steps {
             let sub_keys0: Vec<u128> = lead
                 .iter()
-                .zip(reduced_data.iter())
-                .map(|(f, (k, _v))| {
+                .zip(reduced_keys.iter())
+                .map(|(f, k)| {
                     let next = (*k >> (round * extra_bits + output_bits)) & ((1 << extra_bits) - 1);
                     (*f as u128) | (next as u128) << output_bits
                 })
@@ -2654,33 +2762,14 @@ impl Dict<u64, u64> for Ruzic09Dict {
             hashes.push(hash);
         }
 
-        // TODO: deduplicate this / create GenericDict from PerfectHash
-
-        // Identify a value which is _not_ a valid key.
-        let mut is_key: Vec<bool> = vec![false; data.len()];
-        for (k, _v) in data {
-            if *k < data.len() as u64 {
-                is_key[*k as usize] = true;
-            }
-        }
-
-        let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
-        // Fill table entries
-        let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << output_bits];
-        for (i, v) in lead.iter().enumerate() {
-            table[*v as usize] = data[i];
-        }
-
-        Ruzic09Dict {
+        Ruzic09Hash {
             reduction,
             hashes,
             u_bits,
             output_bits,
-            table,
-            non_key,
         }
     }
-    fn query(&self, key: u64) -> Option<u64> {
+    fn query(&self, key: u64) -> u64 {
         let d = self.reduction.apply(key);
 
         let extra_bits = self.u_bits - self.output_bits;
@@ -2690,12 +2779,26 @@ impl Dict<u64, u64> for Ruzic09Dict {
             let nxt = (d >> ((i as u32) * extra_bits + self.output_bits)) & ((1 << extra_bits) - 1);
             val = h.query(val as u128 | ((nxt as u128) << self.output_bits));
         }
-        let entry = self.table[val as usize];
-        if entry.0 != key || key == self.non_key {
-            None
-        } else {
-            Some(entry.1)
+        val
+    }
+    fn output_bits(&self) -> u32 {
+        self.output_bits
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        let mut x = 0;
+        for h in self.hashes.iter() {
+            x += h.max_memory_read().unwrap();
         }
+        Some(x)
+    }
+
+    fn total_memory_usage(&self) -> Option<usize> {
+        let mut space = std::mem::size_of::<Self>() - std::mem::size_of_val(&self.reduction);
+        space += self.reduction.total_memory_usage().unwrap();
+        for h in self.hashes.iter() {
+            space += h.total_memory_usage().unwrap();
+        }
+        Some(space)
     }
 }
 
@@ -2963,6 +3066,13 @@ impl PerfectHash<u64, u64> for Raman95Hash {
     fn output_bits(&self) -> u32 {
         self.0.output_bits()
     }
+    fn max_memory_read(&self) -> Option<u32> {
+        /* Multipliers are all unconditionally used and could be stored in-struct. */
+        Some(0)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
 }
 
 /** Dictionary constructed from [Raman95Hash] */
@@ -3034,6 +3144,12 @@ impl PerfectHash<u64, u64> for FastOMS {
     }
     fn output_bits(&self) -> u32 {
         self.0.output_bits()
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
     }
 }
 
@@ -3871,6 +3987,16 @@ impl PerfectHash<u64, u64> for OMSxHMP01Hash {
     fn output_bits(&self) -> u32 {
         self.hash.r_bits
     }
+
+    fn max_memory_read(&self) -> Option<u32> {
+        self.hash.max_memory_read()
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(
+            std::mem::size_of::<Self>() - std::mem::size_of::<HMPQuadHash>()
+                + self.hash.total_memory_usage().unwrap(),
+        )
+    }
 }
 
 #[test]
@@ -3975,6 +4101,18 @@ impl PerfectHash<u64, u64> for OMSxFKSHash {
          * faster to construct, but may slow down evaluation. */
         let index2 = hash2.query(key);
         index2 + offset
+    }
+
+    fn max_memory_read(&self) -> Option<u32> {
+        /* Only reading from secondary hash table */
+        Some(1)
+    }
+
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(
+            std::mem::size_of::<Self>()
+                + self.secondary_hashes.len() * std::mem::size_of::<(MultiplyShiftHash, u64)>(),
+        )
     }
 }
 
@@ -4124,9 +4262,270 @@ impl PerfectHash<u64, u64> for OMSxDispHash {
         let lo = (decollided >> self.shift_lo) & ((1 << (self.shift_hi - self.shift_lo)) - 1);
         self.displacements[hi as usize] ^ lo
     }
+
+    fn max_memory_read(&self) -> Option<u32> {
+        /* Read a single displacement */
+        Some(1)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>() + self.displacements.len() * std::mem::size_of::<u64>())
+    }
 }
 
 #[test]
 fn test_omsxdisp_hash() {
     test_perfect_hash::<OMSxDispHash>();
+}
+
+/* ---------------------------------------------------------------------------- */
+
+/** Unproven construction algorithmm for OMS hashes: greedily select bits in order
+ * from lowest to highest, using the _collision function_ to decide when to add a 1-bit. */
+#[cfg(test)]
+fn construct_oms_greedy(keys: &[u64], u_bits: u32, s_bits: Option<u32>) -> MultiplyShiftHash {
+    let s_bits = if let Some(s) = s_bits {
+        s
+    } else {
+        /* ideal value if using method of conditional expectations */
+        (next_log_power_of_two(keys.len() * (keys.len() - 1) + 1)).min(u_bits)
+    };
+    assert!(s_bits >= 1);
+    assert!(s_bits < u64::BITS);
+
+    fn count_collisions(keys: &[u64], a: u64, u_bits: u32, s_bits: u32) -> u128 {
+        let mut outputs: Vec<u64> = keys
+            .iter()
+            .map(|k| k.wrapping_mul(a << (u64::BITS - u_bits)) >> (u64::BITS - s_bits))
+            .collect();
+
+        outputs.sort_unstable();
+
+        let mut ncoll: u128 = 0;
+        let mut class_start = 0;
+        while class_start < keys.len() {
+            let mut class_end = class_start;
+            let cur_val = outputs[class_start];
+            while class_end < keys.len() && outputs[class_end] == cur_val {
+                class_end += 1;
+            }
+            let class_sz = (class_end - class_start) as u128;
+            ncoll += class_sz * (class_sz.max(1) - 1) / 2;
+            class_start = class_end;
+        }
+
+        ncoll
+    }
+
+    let mut a = 1;
+    for i in 1..u_bits {
+        let c0 = count_collisions(keys, a, u_bits, s_bits);
+        let c1 = count_collisions(keys, a + (1 << i), u_bits, s_bits);
+        /* Two main options for the greedy strategy: c1 < c0 and c1 <= c0.
+         * (Could _also_ start with a=(-1) and _remove_ bits, but it isn't clear
+         * why that would gain anything.) */
+        if c1 < c0 {
+            a = a + (1 << i);
+        }
+        if c0 == 0 {
+            break;
+        }
+        // println!("c0 {} c1 {}", c0, c1);
+    }
+
+    MultiplyShiftHash {
+        a: a << (u64::BITS - u_bits),
+        shift: u64::BITS - s_bits,
+    }
+}
+
+#[test]
+#[ignore]
+fn test_greedy_oms() {
+    /* A failed greedy hash construction. */
+    use itertools::Itertools;
+
+    if true {
+        /* Candidate hard construction: additive sumset with (typically) large differences
+         * that when multiplied by 1+2^i for i>=1 become small. Any bit-by-bit greedy algorithm
+         * that only switches when multiplier 1+2^i has equal or fewer collisions will never
+         * deviate from the local minimum on this sort of input. This design uses the fact
+         * that multiplicative inverses in some sense behave like random values.
+         *
+         * Similar results (~20 output bits needed when log(|keys|^2) ~ 12) occur for either
+         * greedy tie breaking strategy.
+         */
+        fn inv_u(value: u64, u_bits: u32) -> u64 {
+            assert!(value % 2 == 1 && u_bits < u64::BITS);
+            let mut inv = 1u64;
+            let mut sqpow = value;
+            for _ in 0..(u_bits - 1) {
+                inv = (inv.wrapping_mul(sqpow)) % (1 << u_bits);
+                sqpow = (sqpow.wrapping_mul(sqpow)) % (1 << u_bits);
+            }
+            assert!(inv.wrapping_mul(value) % (1 << u_bits) == 1);
+            inv
+        }
+
+        for u in 2..=63 {
+            /* note: this design can be slightly strengthened by scaling `t` by values of magnitude
+             * <= 1<<(u-s), to maximize differences within `t` and the minimum value of elements in `t`,
+             * preventing (most) collisions with multiplier 1 while making collisions with multiplier
+             * 1+2^i more likely. */
+            let t: Vec<u64> = (1..u).map(|k| inv_u(1 + (1 << k), u)).collect();
+            let mut keys = Vec::new();
+            for i in 0..t.len() {
+                for j in 0..i {
+                    keys.push((t[i].wrapping_add(t[j])) % (1 << u));
+                }
+            }
+            // println!("{:?}", t);
+            keys.sort_unstable();
+            for w in keys.windows(2) {
+                assert!(w[0] != w[1]);
+            }
+            let ideal_bits = next_log_power_of_two(t.len() * (t.len() - 1) + 1);
+            for s_bits in 1..u64::BITS {
+                let hash = construct_oms_greedy(&keys, u, Some(s_bits));
+
+                let mut outputs = Vec::new();
+                for k in keys.iter() {
+                    outputs.push((hash.query(*k), *k));
+                }
+                outputs.sort_unstable();
+                let mut has_collision = false;
+                for w in outputs.windows(2) {
+                    has_collision |= w[0].0 == w[1].0;
+                }
+
+                if !has_collision {
+                    println!(
+                        "for u={}, minimum number of output bits needed: {}, vs ideal {}",
+                        u, s_bits, ideal_bits
+                    );
+                    break;
+                }
+
+                // println!("{:?}", s);
+
+                // println!("{} {}", x, inv_u(x, u));
+            }
+        }
+    }
+
+    if false {
+        /* Exhaustive search on structured set.
+         * With the '<' condition to add a 1-bit:
+         * [0, 17, 40, 171, 194, 211, 233, 234], u=8, s=6
+         * [0, 1, 92, 93, 182, 183, 274, 275], u=9, s=6
+         * [0, 1, 3, 4, 822, 823, 825, 826, 1403, 1404, 1406, 1407, 1467, 1468, 1470, 1471], u=11, s=8
+         * [0, 1, 2, 3, 262, 263, 264, 265, 2367, 2368, 2369, 2370, 2629, 2630, 2631, 2632], u=12, s=8
+         *
+         * With the '<=' condition to add a 1-bit:
+         * [0, 13, 23, 36, 37, 50, 60, 73], u=8, s=6
+         * [0, 1, 3, 4, 134, 135, 137, 138], u=9, s=6
+         * [0, 1, 2, 3, 5, 6, 7, 8, 3831, 3832, 3833, 3834, 3836, 3837, 3838, 3839], u=12, s=8
+         *
+         * It is not impossible that there is a _simple_ greedy multiply-shift parameter finding
+         * algorithm, but the most basic designs do not work for the same output space as the
+         * current algorithms, and would need more output bits.
+         */
+
+        let dim: u32 = 3;
+        let s_bits = 2 * dim;
+        let u_bits = 3 * dim;
+
+        /* Test pattern: linear combinations */
+        let mut keys: Vec<u64> = Vec::new();
+        for comb in (1..(1u64 << u_bits)).combinations(dim as usize) {
+            keys.clear();
+
+            for y in 0..(1 << dim) {
+                let mut v = 0;
+                for j in 0..dim {
+                    if (y & (1 << j)) != 0 {
+                        v += comb[j as usize];
+                    }
+                }
+                v = v % (1 << u_bits);
+                keys.push(v);
+            }
+
+            keys.sort_unstable();
+            let mut all_unique = true;
+            for w in keys.windows(2) {
+                if w[0] == w[1] {
+                    all_unique = false;
+                }
+            }
+            if !all_unique {
+                continue;
+            }
+            println!("{:?}, u={}, s={}", keys, u_bits, s_bits);
+            let hash = construct_oms_greedy(&keys, u_bits, Some(s_bits));
+            assert!(u64::BITS - hash.shift == s_bits);
+
+            let mut outputs = Vec::new();
+            for k in keys.iter() {
+                outputs.push((hash.query(*k), *k));
+            }
+            outputs.sort_unstable();
+            for w in outputs.windows(2) {
+                assert!(
+                    w[0].0 != w[1].0,
+                    "hash collision at size {}, output bits={}: {}->{} and {}->{}",
+                    s_bits,
+                    u64::BITS - hash.shift,
+                    w[0].1,
+                    w[0].0,
+                    w[1].1,
+                    w[1].0
+                );
+            }
+        }
+    }
+
+    if false {
+        // NOTE: _random_ data typically already has no collisions in the top bits,
+        // so this is not a very good test.
+        let u_bits = u16::BITS;
+        let mut sizes: Vec<usize> = vec![2, 3];
+        for j in 2..10 {
+            sizes.push(2 << j);
+            sizes.push(3 << j);
+        }
+
+        for s in sizes {
+            println!("{}", s);
+            for iter in 0..(100usize.div_ceil(s)) {
+                let keys: Vec<u64> = if iter < 10 {
+                    (0..((s * (iter + 1)) as u64)).collect()
+                } else {
+                    let data = util::make_random_chain(s as u64, u_bits, iter as u64, iter as u64);
+                    data.iter().map(|x| x.0).collect()
+                };
+
+                assert!(keys.len() == BTreeSet::from_iter(keys.iter().copied()).len());
+                println!();
+                let hash = construct_oms_greedy(&keys, u_bits, None);
+
+                let mut outputs = Vec::new();
+                for k in keys {
+                    outputs.push((hash.query(k), k));
+                }
+                outputs.sort_unstable();
+                for w in outputs.windows(2) {
+                    assert!(
+                        w[0].0 != w[1].0,
+                        "hash collision at size {}, output bits={}: {}->{} and {}->{}",
+                        s,
+                        u64::BITS - hash.shift,
+                        w[0].1,
+                        w[0].0,
+                        w[1].1,
+                        w[1].0
+                    );
+                }
+            }
+        }
+    }
 }

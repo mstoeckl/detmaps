@@ -46,8 +46,8 @@ fn main() {
 
     let pattern = args.get(3).map(|x| x.as_str()).unwrap_or("rand32");
     let data = match pattern {
-        "rand32" => util::make_random_chain_32(sz, 0x1, 0x1111),
-        "rand64" => util::make_random_chain_64(sz, 0x1, 0x1111),
+        "rand32" => util::make_random_chain(sz, 32, 0x1, 0x1111),
+        "rand64" => util::make_random_chain(sz, 64, 0x1, 0x1111),
         _ => unimplemented!(),
     };
     let queries: Vec<u64> = std::hint::black_box(data.iter().map(|x| x.0).collect());

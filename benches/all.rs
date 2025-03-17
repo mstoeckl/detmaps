@@ -7,7 +7,7 @@
 
 use clap::{Arg, ArgAction};
 use detmaps::*;
-use rustix::{io, pipe, process};
+use rustix::{event, fs, io, pipe, process};
 use std::{
     collections::BTreeSet,
     io::Write,
@@ -31,6 +31,8 @@ struct DictionaryCycleResults {
     average_time_per_setup: f64,
     average_time_per_chainq: f64,
     average_time_per_parq: f64,
+    max_read_operations: Option<u32>,
+    total_memory_usage: Option<usize>,
 }
 
 struct ParameterInfo {
@@ -69,13 +71,11 @@ fn run_dictionary_cycle<H: Dict<u64, u64>>(
     sz: usize,
     seed: u64,
 ) -> DictionaryCycleResults {
-    let data: Vec<(u64, u64)> = std::hint::black_box(if u_bits == 32 {
-        util::make_random_chain_32(sz as u64, seed, seed + 1)
-    } else if u_bits == 64 {
-        util::make_random_chain_64(sz as u64, seed, seed + 1)
-    } else {
-        panic!();
-    });
+    /* data uses: `>= 32 n` bits of space */
+    let data: Vec<(u64, u64)> =
+        std::hint::black_box(util::make_random_chain(sz as u64, u_bits, seed, seed + 1));
+    let chain_iterations =
+        std::hint::black_box((data.len() as u64).checked_mul(iterations).unwrap());
 
     let start_time = std::time::Instant::now();
     let mut dict = None;
@@ -93,12 +93,8 @@ fn run_dictionary_cycle<H: Dict<u64, u64>>(
     let dict = dict.unwrap();
     util::parallel_query(&dict, &data);
     let warmup_time = std::time::Instant::now();
-    for _ in 0..iterations {
-        util::chain_query(&dict, &data);
-    }
+    util::chain_query(&dict, chain_iterations, data[0].0);
     let chain_query_time = std::time::Instant::now();
-    // TODO: can simply follow the chain for 'n*iterations' steps;
-    // and check the final end point is the starting point; no need for outer/inner loops
     for _ in 0..iterations {
         util::parallel_query(&dict, &data);
     }
@@ -113,6 +109,8 @@ fn run_dictionary_cycle<H: Dict<u64, u64>>(
             .duration_since(chain_query_time)
             .as_secs_f64()
             / (iterations as f64),
+        max_read_operations: dict.max_memory_read(),
+        total_memory_usage: dict.total_memory_usage(),
     }
 }
 
@@ -137,12 +135,13 @@ fn run_bench<H: Dict<u64, u64>>(cfg: &BenchConfig) {
     let suggested_iteration_count = (cfg.min_time_sec / (10.0 * seed_elapsed)).ceil() as u64;
     assert!(suggested_iteration_count >= 1);
     /* Assuming 1us time measurement overhead.
+     *
      * This systematic error should be an _upper bound_ on the systematic
-     * deviation of the measured time from the time we wanted to measure,
-     * but it ignores the cost of the iteration loop itself and however
+     * deviation of the measured per-element time from the time we wanted to
+     * measure, but it ignores the cost of the iteration loop itself and however
      * the compiler and CPU together optimize or pessimize std::black_box.
      */
-    let systematic_error = 1e-6 / (suggested_iteration_count as f64);
+    let systematic_error = 1e-6 / (suggested_iteration_count as f64) / (cfg.sz as f64);
 
     let mut measurements = Vec::new();
     if suggested_iteration_count == 1 {
@@ -188,6 +187,21 @@ fn run_bench<H: Dict<u64, u64>>(cfg: &BenchConfig) {
     message += &format!(
         "\"dictionary\": \"{}\", \"u_bits\": {}, \"n_elements\": {}, ",
         cfg.dict_name, cfg.u_bits, cfg.sz
+    );
+
+    message += &format!(
+        "\"max_read_operations\": {},",
+        (measurements[0]
+            .max_read_operations
+            .map(|x| x as f64)
+            .unwrap_or(f64::NAN))
+    );
+    message += &format!(
+        "\"total_memory_usage\": {},",
+        (measurements[0]
+            .total_memory_usage
+            .map(|x| x as f64)
+            .unwrap_or(f64::NAN))
     );
 
     message += "\"measurements\": {\n";
@@ -252,8 +266,8 @@ fn main() {
 
     let matches = cmd.get_matches();
 
-    let memory_limit = 10000000000; /* bytes */
-    let time_hard_max = 100; /* seconds */
+    let memory_limit = 10 * 1024 * 1024 * 1024; /* bytes */
+    let time_hard_max = 10.0; /* seconds */
     let time_soft_max = 3.0; /* seconds */
     let time_min = 0.1; /* seconds */
 
@@ -290,8 +304,6 @@ fn main() {
         let sz = 1 << sz_bits;
 
         let mem_limit = process::getrlimit(process::Resource::As);
-        let time_limit = process::getrlimit(process::Resource::Cpu);
-
         let new_memory_limit = mem_limit.current.unwrap_or(memory_limit).min(memory_limit);
         process::setrlimit(
             process::Resource::As,
@@ -302,22 +314,14 @@ fn main() {
         )
         .unwrap();
 
-        /* Note: this imposes a CPU time limit inside the process, but the
-         * timeout granularity is limited, and (in general) time limits should
-         * in terms of wall clock time and be enforced by the parent process,
-         * to ensure the benchmark subprocess cannot hang while ignoring signals.
-         *
-         * Also: SIGXCPU dumps core by default; a parent SIGKILL would avoid this.
-         */
-        let new_time_limit = time_limit
-            .current
-            .unwrap_or(time_hard_max)
-            .min(time_hard_max);
+        /* Disable core dumps; running out of memory will make Rust abort, which by
+         * default produces a (generally huge) core dump. (The alternative, changing
+         * SIGABRT disposition, is not supported by `rustix`.) */
         process::setrlimit(
-            process::Resource::Cpu,
+            process::Resource::Core,
             process::Rlimit {
-                current: Some(new_time_limit),
-                maximum: Some(new_time_limit + 1),
+                current: Some(0),
+                maximum: Some(0),
             },
         )
         .unwrap();
@@ -428,33 +432,60 @@ fn main() {
             .unwrap();
         drop(pipe_w);
 
-        /* todo: move time enforcement to this process */
+        fs::fcntl_setfl(&pipe_r, fs::OFlags::NONBLOCK).unwrap();
 
         let mut output: Vec<u8> = Vec::new();
         let mut buf = [0; 4096];
         let mut clean_exit;
         loop {
-            match io::read(&pipe_r, &mut buf) {
-                Err(err) => match err {
-                    io::Errno::AGAIN | io::Errno::INTR => {
-                        continue;
+            let elapsed_time = std::time::Instant::now().duration_since(bench_start_time);
+            let remaining_time = time_hard_max - elapsed_time.as_secs_f64();
+            if remaining_time < 0.0 {
+                process::kill_process(process::Pid::from_child(&handle), process::Signal::KILL)
+                    .unwrap();
+                clean_exit = false;
+                break;
+            }
+
+            let mut pfd = event::PollFd::new(&pipe_r, event::PollFlags::IN);
+            let wait_nsecs: u64 = (remaining_time * 1e9).min((1u64 << 63) as f64).floor() as u64;
+            let timeout = event::Timespec {
+                tv_sec: (wait_nsecs / 1_000_000_000) as _,
+                tv_nsec: (wait_nsecs % 1_000_000_000) as _,
+            };
+
+            event::poll(std::slice::from_mut(&mut pfd), Some(&timeout)).unwrap();
+
+            let evts = pfd.revents();
+            if evts.contains(event::PollFlags::IN) {
+                match io::read(&pipe_r, &mut buf) {
+                    Err(err) => match err {
+                        io::Errno::AGAIN | io::Errno::INTR => {
+                            continue;
+                        }
+                        io::Errno::CONNRESET | io::Errno::NOTCONN => {
+                            clean_exit = true;
+                            break;
+                        }
+                        _ => {
+                            clean_exit = false;
+                            break;
+                        }
+                    },
+                    Ok(b) => {
+                        if b == 0 {
+                            clean_exit = true;
+                            break;
+                        }
+                        output.extend_from_slice(&buf[..b]);
                     }
-                    io::Errno::CONNRESET | io::Errno::NOTCONN => {
-                        clean_exit = true;
-                        break;
-                    }
-                    _ => {
-                        clean_exit = false;
-                        break;
-                    }
-                },
-                Ok(b) => {
-                    if b == 0 {
-                        clean_exit = true;
-                        break;
-                    }
-                    output.extend_from_slice(&buf[..b]);
                 }
+                continue;
+            }
+
+            if evts.intersects(event::PollFlags::ERR | event::PollFlags::HUP) {
+                clean_exit = true;
+                break;
             }
         }
         handle.wait().unwrap();
@@ -501,6 +532,7 @@ fn main() {
         f.write(validated_output).unwrap();
         drop(f);
 
+        // todo: can the replacement be done atomically using `rename`?
         let _ = std::fs::remove_file(&current_path);
         std::os::unix::fs::symlink(&rel_archive_path, &current_path).unwrap();
     }

@@ -34,6 +34,20 @@ def main():
 
         measurements = data["measurements"]
 
+        name_parts = ("rand" + str(u_bits), dict_name, "maxread")
+        if "max_read_operations" in data:
+            if name_parts not in all_results:
+                all_results[name_parts] = {}
+            v = float(data["max_read_operations"])
+            all_results[name_parts][sz] = (v, v, v)
+
+        name_parts = ("rand" + str(u_bits), dict_name, "memory")
+        if "total_memory_usage" in data:
+            if name_parts not in all_results:
+                all_results[name_parts] = {}
+            v = float(data["total_memory_usage"])
+            all_results[name_parts][sz] = (v, v, v)
+
         for step in ["setup", "chainq", "parq"]:
             name_parts = ("rand" + str(u_bits), dict_name, step)
             if name_parts not in all_results:
@@ -68,6 +82,8 @@ def main():
         "setup": "-",
         "chainqx100": "-",
         "parqx100": "-",
+        "maxread": "-",
+        "memory": "-",
     }
     markers = {
         "chainq": ".",
@@ -75,6 +91,8 @@ def main():
         "setup": "p",
         "chainqx100": "x",
         "parqx100": "x",
+        "maxread": "x",
+        "memory": "x",
     }
     # the matplotlib tab20 color list, slightly rounded
     color_list = list(matplotlib.colormaps["tab20"].colors[1::2]) + list(
@@ -84,7 +102,16 @@ def main():
         with matplotlib.backends.backend_pdf.PdfPages(
             os.path.join(output_dir, category + ".pdf")
         ) as pdf:
-            for mode in ["all", "setup", "parq", "chainq", "parqx100", "chainqx100"]:
+            for mode in [
+                "all",
+                "setup",
+                "parq",
+                "chainq",
+                "maxread",
+                "memory",
+                "parqx100",
+                "chainqx100",
+            ]:
                 print("mode {}, category {}".format(mode, category))
 
                 fig, ax = plt.subplots()
@@ -92,6 +119,7 @@ def main():
 
                 active_dicts = set()
 
+                line_no = 0
                 for (cat, dict_name, step), vals in sorted(all_results.items()):
                     if cat != category:
                         continue
@@ -115,7 +143,15 @@ def main():
                     ests = np.array([a[1] for a in x])
 
                     # Normalize by number of elements processed
-                    ests /= 2 ** sz[:, np.newaxis]
+                    if step != "maxread":
+                        ests /= 2 ** sz[:, np.newaxis]
+                    else:
+                        # offset lines very slightly to distinguish them?
+                        # issue: only have O(1) collisions per point in general; this
+                        # offsets points inconsistently. The correct thing to do is
+                        # perform offset operations globally
+                        ests += 0.003 * line_no * (2 * (line_no % 2) - 1)
+                        line_no += 1
 
                     ax.errorbar(
                         sz,
@@ -128,9 +164,18 @@ def main():
                     )
 
                 ax.set_yscale("log")
-                ax.set_ylabel("Time per element (ns)")
+                if mode == "maxread":
+                    ax.set_ylabel("Number of reads")
+                elif mode == "memory":
+                    ax.set_ylabel("Bytes per element")
+                else:
+                    ax.set_ylabel("Time per element (ns)")
                 if mode.endswith("x100"):
                     ax.set_ylim(1e2, 5e5)
+                elif mode == "maxread":
+                    ax.set_ylim(0.5, 1e2)
+                elif mode == "memory":
+                    ax.set_ylim(1e1, 5e4)
                 else:
                     # set a 'uniform' ylimit to make cross-plot and cross-computer comparison easier
                     ax.set_ylim(0.5, 5e4)
@@ -157,6 +202,13 @@ def main():
                     ax.set_title(
                         "Workload: setup + 100n parallel queries, for " + category
                     )
+                elif mode == "maxread":
+                    ax.set_title(
+                        "Worst-case number of unpredictable/uncached reads, for "
+                        + category
+                    )
+                elif mode == "memory":
+                    ax.set_title("Memory usage, for " + category)
                 else:
                     raise NotImplementedError(mode)
 
