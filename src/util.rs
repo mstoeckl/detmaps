@@ -121,12 +121,18 @@ impl Iterator for RandomSubsetIterator<'_> {
          * together multiple binomial samples from smaller distributions; this increases
          * the sampling cost proportionally.
          *
-         * TODO: verify that Binomial (which samples floating point values) is also not
-         * affected by floating point quantization and that the number of collisions
-         * in any region when drawing 10^10 samples from the same distribution is
-         * close to the expected value.
+         * NOTE: Binomial (which samples floating point values) is affected by floating
+         * point quantization and does not properly sample odd values when n is large.
+         * The workaround (of unclear accuracy) is to ensure one of te samples being added
+         * has magnitude 1<<53 or smaller.
          */
         let mut offset = 0;
+        let first_n = 1u64 << 50;
+        if nmk > first_n {
+            let bin = Binomial::new(first_n, p).unwrap();
+            offset += bin.sample(self.rng);
+            nmk -= first_n;
+        }
         let max_n = 1u64 << 62; // 1<<63 is too large
         while nmk > max_n {
             let bin = Binomial::new(max_n, p).unwrap();

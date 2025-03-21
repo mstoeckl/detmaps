@@ -523,6 +523,9 @@ fn compute_displacement(input: &[(u64, u64)], t: u32, r: u32) -> Vec<u64> {
     let mut m = vec![0_u64; 1 << (r + 1)]; // maximum value of 'm' is 'n', at the root
     let mut disp = vec![0; (1 << r).try_into().unwrap()];
 
+    // TODO: consider special-casing size-1 classes since in the OMS+disp construction,
+    // if collision<n/4, they may be common. Also: any way to place size-2 classes more efficiently?
+
     /* Process buckets in decreasing order of size. */
     let mut last_sc_offset = 0;
     for (class_sz, class_end) in bucket_size_class_offsets.iter().enumerate().rev() {
@@ -3137,7 +3140,16 @@ impl PerfectHash<u64, u64> for FastOMS {
             next_log_power_of_two(keys.len().wrapping_mul(keys.len().wrapping_sub(1)) + 1).max(1);
         assert!(output_bits < u64::BITS);
 
+        if output_bits > u_bits {
+            return FastOMS(MultiplyShiftHash {
+                a: 1 << (u64::BITS - u_bits),
+                shift: u64::BITS - u_bits,
+            });
+        }
+        assert!(output_bits <= u_bits);
+
         FastOMS(oms_opt_batch_construction(keys, u_bits, output_bits))
+        // FastOMS(oms_batch_construction2(keys, u_bits, output_bits))
     }
     fn query(&self, key: u64) -> u64 {
         self.0.query(key)
@@ -3349,9 +3361,11 @@ fn test_oms_fast_hash() {
     }
 
     for keys in seqs {
-        let hash2 = oms_opt_slow_construction(&keys, u64::BITS);
-        let hash1 = oms_opt_batch_construction(&keys, u64::BITS, hash2.output_bits());
+        let hash1 = oms_opt_slow_construction(&keys, u64::BITS);
+        let hash2 = oms_opt_batch_construction(&keys, u64::BITS, hash1.output_bits());
+        let hash3 = oms_batch_construction2(&keys, u64::BITS, hash1.output_bits());
         assert!(hash1.a == hash2.a && hash1.output_bits() == hash2.output_bits());
+        assert!(hash1.a == hash3.a && hash1.output_bits() == hash3.output_bits());
     }
 }
 
@@ -3363,7 +3377,9 @@ fn compute_oms_batch_ring_count(
     gap: u64,
     mod_mask: u64,
 ) -> u128 {
-    let all_r_equal = sorted_r.windows(2).all(|x| x[0] == x[1]);
+    let all_r_equal = sorted_r
+        .windows(2)
+        .all(|x| x[0] & mod_mask == x[1] & mod_mask);
     if all_r_equal {
         /* Special case: all values are equal. (The two-pointer scanning approach uses when
          * values are not all equal does not work here.) */
@@ -3440,7 +3456,7 @@ fn compute_oms_batch_ring_count(
         let mut min_diff = mod_mask; /* any value >= mod_mask is OK for initial value */
         let mut next_value = sorted_r[0];
         for (i, val) in sorted_r.iter().enumerate().rev() {
-            if *val == next_value {
+            if *val & mod_mask == next_value & mod_mask {
                 /* Not a candidate for a rightmost extremum in a circularly sorted list */
                 continue;
             }
@@ -3460,7 +3476,7 @@ fn compute_oms_batch_ring_count(
         let mut max_gap_diff = 0;
         let mut prev_value = *sorted_r.last().unwrap();
         for (i, val) in sorted_r.iter().enumerate() {
-            if *val == prev_value {
+            if *val & mod_mask == prev_value & mod_mask {
                 /* Not a candidate for a leftmost extremum in a circularly sorted list */
                 continue;
             }
@@ -3514,7 +3530,7 @@ fn compute_oms_batch_ring_count(
             // );
 
             let cval = sorted_r[left];
-            while sorted_r[left] == cval {
+            while sorted_r[left] & mod_mask == cval & mod_mask {
                 prev_left_value = sorted_r[left];
                 left = next_mod(left, sorted_r.len());
             }
@@ -3566,9 +3582,12 @@ fn compute_oms_batch_ring_count(
 
             assert!(
                 brute_local == local_count,
-                "brute {} local {}",
+                "brute {} local {} | l={:x?}, r={:x?}, mask={:x}",
                 brute_local,
                 local_count,
+                sorted_l,
+                sorted_r,
+                mod_mask
             );
         }
 
@@ -3634,13 +3653,13 @@ fn compute_oms_batch_delta(
      * masking here, and apply the mask while sorting; doing this
      * would require adjusting the 'all_equal' case of [compute_oms_batch_ring_count]. */
     for (ak, k) in scratch_l.iter_mut().zip(keys_l.iter()) {
-        *ak = k.wrapping_mul(alpha) & mod_mask;
+        *ak = k.wrapping_mul(alpha);
     }
     for (ak, k) in scratch_r.iter_mut().zip(keys_r.iter()) {
-        *ak = k.wrapping_mul(alpha) & mod_mask;
+        *ak = k.wrapping_mul(alpha);
     }
-    scratch_l.sort_unstable();
-    scratch_r.sort_unstable();
+    scratch_l.sort_unstable_by_key(|k| k & mod_mask);
+    scratch_r.sort_unstable_by_key(|k| k & mod_mask);
 
     let gap = 1 << (u_bits - output_bits);
 
@@ -3926,6 +3945,366 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
                     // Note: since there are O(n) intervals, could record change in interaction counts per-interval
                 }
             }
+
+            wt += interaction_counts[i as usize] * extensions_per_interaction;
+        }
+        // println!("interaction counts: {:?}", interaction_counts);
+        last_interaction_counts = interaction_counts;
+
+        if let Some(lwt) = last_wt {
+            /* Chose the sub-average branch. */
+            // wt  = lwt - wt
+            if lwt - wt < wt {
+                a |= 1 << b;
+                last_wt = Some(lwt - wt);
+            } else {
+                last_wt = Some(wt);
+            }
+        } else {
+            last_wt = Some(wt);
+        }
+    }
+    assert!(util::saturating_shr(a, u_bits) == 0);
+    MultiplyShiftHash {
+        shift: u64::BITS - output_bits,
+        a: a << u_compensation_shift,
+    }
+}
+
+/** Given pre-multiplied keys with common (0..=i) bits, which were split into groups by bit `i+1`, and
+ * sorted according to bits (i+2)..(mult_bits+1), rearrange to be sorted by i+1..mult_bits.
+ */
+fn batch_partial_sort_step(mkeys: &mut [u64], scratch: &mut [u64], mult_bits: u32, i_bits: u32) {
+    assert!(mkeys.len() == scratch.len());
+
+    fn merge_away_top_bit(a: &[u64], mult_bits: u32, output: &mut [u64]) {
+        if mult_bits >= u64::BITS {
+            /* Mask does not change / no need to merge-by-top-bit */
+            output.copy_from_slice(a);
+            return;
+        }
+
+        let mod_mask = (1 << mult_bits) - 1;
+        let mut out_iterator = output.iter_mut();
+
+        let mut iter_0 = a.iter().filter(|x| *x & (1 << mult_bits) == 0);
+        let mut iter_1 = a.iter().filter(|x| *x & (1 << mult_bits) != 0);
+
+        let mut opt_val0 = iter_0.next();
+        let mut opt_val1 = iter_1.next();
+        loop {
+            let Some(val0) = opt_val0 else {
+                if let Some(val1) = opt_val1 {
+                    *out_iterator.next().unwrap() = *val1;
+                }
+                while let Some(val1) = iter_1.next() {
+                    *out_iterator.next().unwrap() = *val1;
+                }
+                return;
+            };
+            let Some(val1) = opt_val1 else {
+                *out_iterator.next().unwrap() = *val0;
+                while let Some(val0) = iter_0.next() {
+                    *out_iterator.next().unwrap() = *val0;
+                }
+                return;
+            };
+            *out_iterator.next().unwrap() = if val0 & mod_mask < val1 & mod_mask {
+                /* merge order here is not important; this approach places 0xyz before 1xyz */
+                opt_val0 = iter_0.next();
+                *val0
+            } else {
+                opt_val1 = iter_1.next();
+                *val1
+            };
+        }
+    }
+    fn merge_sorted_lists(a: &[u64], b: &[u64], mod_mask: u64, output: &mut [u64]) {
+        if a.is_empty() {
+            output.copy_from_slice(b);
+            return;
+        }
+        if b.is_empty() {
+            output.copy_from_slice(a);
+            return;
+        }
+        assert!(a.len() + b.len() == output.len());
+
+        let mut output_iter = output.iter_mut();
+        let mut a_iter = a.iter();
+        let mut b_iter = b.iter();
+
+        let mut a_val = *a_iter.next().unwrap();
+        let mut b_val = *b_iter.next().unwrap();
+
+        loop {
+            if a_val & mod_mask < b_val & mod_mask {
+                *output_iter.next().unwrap() = a_val;
+
+                if let Some(x) = a_iter.next() {
+                    a_val = *x;
+                } else {
+                    /* Only right values remaining */
+                    *output_iter.next().unwrap() = b_val;
+                    while let Some(y) = b_iter.next() {
+                        *output_iter.next().unwrap() = *y;
+                    }
+                    assert!(output_iter.next().is_none());
+                    return;
+                }
+            } else {
+                *output_iter.next().unwrap() = b_val;
+
+                if let Some(x) = b_iter.next() {
+                    b_val = *x;
+                } else {
+                    /* Only left values remaining */
+                    *output_iter.next().unwrap() = a_val;
+                    while let Some(y) = a_iter.next() {
+                        *output_iter.next().unwrap() = *y;
+                    }
+                    assert!(output_iter.next().is_none());
+                    return;
+                }
+            }
+        }
+    }
+
+    if mkeys.len() > 0 {
+        let sfx = mkeys[0] & ((1 << (i_bits + 1)) - 1);
+        for k in mkeys.iter() {
+            assert!(k & ((1 << (i_bits + 1)) - 1) == sfx);
+        }
+    }
+
+    let mut count_with_1 = 0;
+    for k in mkeys.iter() {
+        if k & (1 << (i_bits + 1)) != 0 {
+            count_with_1 += 1;
+        }
+    }
+    /* The multiplication may swap which keys has a zero vs one bit at position
+     * (i+1), but either all the keys with a zero bit should be first, or all those
+     * with a one bit, with no interleaving. */
+    let len0 = if count_with_1 < mkeys.len() && mkeys[0] & (1 << (i_bits + 1)) == 0 {
+        mkeys.len() - count_with_1
+    } else {
+        count_with_1
+    };
+
+    // if len0 > 0 {
+    //     let z : u64 = mkeys[0] & (1 << (i_bits + 1));
+    //     for i in 0..len0 {
+    //         assert!(mkeys[i] & (1 << (i_bits + 1)) == z);
+    //     }
+    //     for i in len0..mkeys.len() {
+    //         assert!(mkeys[i] & (1 << (i_bits + 1)) != z);
+    //     }
+    // }
+
+    let (part0, part1) = mkeys.split_at(len0);
+
+    let (scratch0, scratch1) = scratch.split_at_mut(len0);
+    //     /* fill with sentinels to detect incomplete write */
+    //     scratch0.fill(u64::MAX);
+    //     scratch1.fill(u64::MAX);
+
+    merge_away_top_bit(&part0, mult_bits, scratch0);
+    merge_away_top_bit(&part1, mult_bits, scratch1);
+
+    let mod_mask = if mult_bits >= u64::BITS {
+        u64::MAX
+    } else {
+        (1 << mult_bits) - 1
+    };
+    // assert!(scratch0.is_sorted_by_key(|k| k & mod_mask), "{:x?} -> {:x?}", part0, scratch0);
+    // assert!(scratch1.is_sorted_by_key(|k| k & mod_mask), "{:x?} -> {:x?}", part1, scratch1);
+
+    merge_sorted_lists(scratch0, scratch1, mod_mask, mkeys);
+
+    // assert!(mkeys.is_sorted_by_key(|k| k & mod_mask), "{:x?}", mkeys);
+}
+
+/** Variant of OMS hash table construction which always runs in O(n w log n) time.
+ *
+ * In practice / on pseudorandom inputs, this may be slower than the construction which sorts
+ * more frequently.
+ */
+#[inline(never)]
+fn oms_batch_construction2(keys: &[u64], u_bits: u32, output_bits: u32) -> MultiplyShiftHash {
+    assert!(keys.len() < usize::MAX / 2); /* For wrapping index calculations */
+    assert!(output_bits <= u_bits, "{} {}", output_bits, u_bits);
+
+    let u_compensation_shift = u64::BITS - u_bits;
+
+    /* To efficiently iterate over pairs of groups of keys whose lsb `i` bits match
+     * (and whose `i+1`th bit differs), it suffices to _sort_ the key set and then
+     * scan over the result. */
+    let mut rev_sorted_keys_vec = Vec::from_iter(keys.iter().map(|k| k << u_compensation_shift));
+    let _ = keys;
+    /* Note: if the source key set is _fixed_, then it may be practical to re-sort
+     * on every `b` iteration and multiply by `a` in-place. Or alternatively: _first_
+     * multiply by 'a', and _then_ sort the result by reversed bits, since
+     * `a` multiplication preserves lsb-prefix length for pairs. Although the
+     * difference isn't critical. */
+    bit_rev_sort(&mut rev_sorted_keys_vec);
+    let rev_sorted_keys: &[u64] = &rev_sorted_keys_vec;
+
+    /* Scratch storage table in which to write multiplied/sorted data */
+    let mut scratch = vec![0u64; rev_sorted_keys.len()];
+    let mut mult_keys = vec![0u64; rev_sorted_keys.len()];
+
+    let mut a: u64 = 1;
+    // let mut last_wt = None;
+
+    let base_counts = oms_base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+    let mut last_interaction_counts = base_counts.clone();
+
+    let mut last_wt = None;
+    /* Bits in 'a' higher than or at u_bits have no effect on the output */
+    for b in 0..u_bits {
+        /* Calculate the "weight" (total bad extension mass) of the extension of `a` by a 0-bit. This,
+         * plus the weight of the 1-bit extension, should equal the weight from the previous
+         * iteration. (Except in first round, where we find the initial weight of `a`.) */
+        let mut wt = 0;
+
+        let mut interaction_counts = last_interaction_counts.clone(); // vec![0u128; (u64::BITS - output_bits) as usize];
+
+        let alpha_bits = b + 1;
+
+        /* Can entirely ignore keys differing only on the top `o` bits, because multiplying
+         * them by 'a' never causes a collision */
+
+        let active_range = (u64::BITS - output_bits + 1).saturating_sub(alpha_bits)
+            ..(u64::BITS + 2)
+                .saturating_sub(alpha_bits)
+                .min(u64::BITS - output_bits);
+
+        for i in 0..active_range.start {
+            /* alpha is not large enough to bring level `i` differences into the
+             * top `o` bits; counts still match base values. */
+            let extensions_per_interaction = 1u128 << (u64::BITS - output_bits - alpha_bits);
+            wt += base_counts[i as usize] * extensions_per_interaction;
+        }
+        for i in active_range.end..(u64::BITS - output_bits) {
+            /* Changes to alpha only affect bits that are already masked off. */
+            let extensions_per_interaction = 1u128 << (u64::BITS - alpha_bits);
+            wt += interaction_counts[i as usize] * extensions_per_interaction;
+        }
+
+        /* Fill array of `key*a` values. Note: since `a` is odd, multiplying by it is invertible,
+         * so one should be able to go from the old key list to the new by multiplying by
+         * (old_a^-1 * a). However, if doing this we would need to redo the bit-reversed sorting.
+         */
+        for (mk, k) in mult_keys.iter_mut().zip(rev_sorted_keys.iter()) {
+            *mk = (*k).wrapping_mul(a);
+        }
+
+        for i in active_range.clone().rev() {
+            let extensions_per_interaction: u128 = if alpha_bits + i <= u64::BITS - output_bits {
+                unreachable!();
+            } else if alpha_bits + i < u64::BITS {
+                1 << i
+            } else {
+                1 << (u64::BITS - alpha_bits)
+            };
+
+            let mult_bits = alpha_bits + i;
+            assert!(mult_bits > u64::BITS - output_bits);
+
+            let mod_mask = if mult_bits < u64::BITS {
+                (1 << mult_bits) - 1
+            } else {
+                u64::MAX
+            };
+
+            let mut interactions = 0;
+            let msk = (1 << i) - 1;
+            let mut interval_start = 0;
+            while interval_start < rev_sorted_keys.len() {
+                let common_prefix = rev_sorted_keys[interval_start] & msk;
+
+                /* note: this interval calculation can switch to operating on 'mult_keys' */
+                let mut count1 = 0;
+                let mut interval_end = interval_start;
+                while interval_end < rev_sorted_keys.len()
+                    && (rev_sorted_keys[interval_end] & msk) == common_prefix
+                {
+                    count1 += (rev_sorted_keys[interval_end] & (1 << i)) >> i;
+                    interval_end += 1;
+                }
+                let count0 = (interval_end - interval_start) - count1 as usize;
+
+                /* continue merge sort phase, and inline the ring batch delta calculation bit.
+                 * For now: _verify sortedness
+                 */
+                // todo!();
+
+                // let all_keys = &rev_sorted_keys[interval_start..interval_end];
+                // let (keys0, keys1) = all_keys.split_at(count0);
+
+                /* Possible average-case optimization: use scratch[..count0+count1] for slightly better
+                 * physical memory locality. */
+                let scratch_region = &mut scratch[interval_start..interval_end];
+                let (scratch0, scratch1) = scratch_region.split_at_mut(count0);
+
+                let (mul0, mul1) = mult_keys[interval_start..interval_end].split_at_mut(count0);
+
+                if i == active_range.end - 1 {
+                    /* Sort both sets */
+                    mul0.sort_unstable_by_key(|k| k & mod_mask);
+                    mul1.sort_unstable_by_key(|k| k & mod_mask);
+                } else {
+                    /* The keys in mul0/mul1 are partially sorted (were sorted by the preceding `i` pass),
+                     * so now sorting them according to mod_mask can be done in linear time. */
+                    batch_partial_sort_step(mul0, scratch0, mult_bits, i);
+                    batch_partial_sort_step(mul1, scratch1, mult_bits, i);
+
+                    if false {
+                        assert!(mul0.is_sorted_by_key(|k| k & mod_mask), "{:x?}", mul0);
+                        assert!(mul1.is_sorted_by_key(|k| k & mod_mask), "{:x?}", mul1);
+                    }
+                }
+                /*
+                /* Note: `mod_mask` is also applied during the ring count, so one could avoid
+                 * masking here, and apply the mask while sorting; doing this
+                 * would require adjusting the 'all_equal' case of [compute_oms_batch_ring_count]. */
+                for (ak, k) in scratch0.iter_mut().zip(keys0.iter()) {
+                    *ak = k.wrapping_mul(a);
+                }
+                for (ak, k) in scratch1.iter_mut().zip(keys1.iter()) {
+                    *ak = k.wrapping_mul(a);
+                }
+                scratch0.sort_unstable_by_key(|k| k & mod_mask);
+                scratch1.sort_unstable_by_key(|k| k & mod_mask);
+
+                for (m, s) in mul0.iter().zip(scratch0.iter()) {
+                    /* Bits outside of mask ordered arbitrarily */
+                    assert!(m & mod_mask == s & mod_mask);
+                }
+                for (m, s) in mul1.iter().zip(scratch1.iter()) {
+                    assert!(m & mod_mask == s & mod_mask);
+                }*/
+
+                // assert!(mul0 == scratch0 && mul1 == scratch1);
+
+                /* todo: next phase: iter mul, sort and compare with preceding value */
+
+                let gap = 1 << (u64::BITS - output_bits);
+
+                let count = if !mul0.is_empty() && !mul1.is_empty() {
+                    let count_lr = compute_oms_batch_ring_count(&mul0, &mul1, gap, mod_mask);
+                    let count_rl = compute_oms_batch_ring_count(&mul1, &mul0, gap, mod_mask);
+                    count_lr + count_rl
+                } else {
+                    0
+                };
+
+                interactions += count;
+                interval_start = interval_end;
+            }
+
+            interaction_counts[i as usize] = interactions;
 
             wt += interaction_counts[i as usize] * extensions_per_interaction;
         }
