@@ -1984,12 +1984,13 @@ nolink "false"
 
 :
 \begin_inset Formula 
-\[
-\Pr_{a\sim E\left(\alpha\right)}\left[a\left(x-y\right)\mod{2^{u}}\div2^{u-s}=0\right]=\begin{cases}
+\begin{align*}
+\Pr_{a\sim E\left(\alpha\right)} & \left[a\left(x-y\right)\mod{2^{u}}\div2^{u-s}=0\right]\\
+= & \begin{cases}
 2^{-s} & i+\left|\alpha\right|\le u-s\\
 1_{\left\{ \left(\alpha\left(x-y\right)+2^{u-s}-1\right)\mod{\min\left(2^{u},2^{\left|\alpha\right|-i}\right)}<2^{u-s}\right\} }\frac{1}{2^{u-\left|\alpha\right|-i}} & i+\left|\alpha\right|>u-s
 \end{cases}
-\]
+\end{align*}
 
 \end_inset
 
@@ -2666,7 +2667,7 @@ nolink "false"
 
 .
  Then if 
-\begin_inset Formula $\left|\alpha\right|+i<u-s$
+\begin_inset Formula $\left|\alpha\right|+i\le u-s$
 \end_inset
 
 ,
@@ -2679,7 +2680,24 @@ nolink "false"
 \end_inset
 
 while if 
-\begin_inset Formula $\left|\alpha\right|+i\ge u-s$
+\begin_inset Formula $\left|\alpha\right|+i\ge u$
+\end_inset
+
+,
+ we have:
+\begin_inset Formula 
+\[
+\Pr_{h_{a,b}\in\mathcal{G}_{b,s}:a\in E\left(\alpha\right)}\left[h_{a,b}\left(x\right)=h_{a,b}\left(y\right)\right]=\max\left(0,\frac{2^{u-s}-\left(2^{u-1}-\left|2^{u-1}-\left(\alpha\left(x-y\right)\mod{2^{u}}\right)\right|\right)}{2^{u-s}}\right)
+\]
+
+\end_inset
+
+and if both 
+\begin_inset Formula $\left|\alpha\right|+i>u-s$
+\end_inset
+
+ and 
+\begin_inset Formula $\left|\alpha\right|+i\le u$
 \end_inset
 
 ,
@@ -2687,7 +2705,7 @@ while if
 \begin_inset Formula 
 \begin{align*}
 \Pr_{h_{a,b}\in\mathcal{G}_{b,s}:a\in E\left(\alpha\right)} & \left[h_{a,b}\left(x\right)=h_{a,b}\left(y\right)\right]=\\
-\frac{1}{2^{u-\left|\alpha\right|-i-1}}\cdot & \max\left(0,\frac{2^{u-s}-\left|2^{\left|\alpha\right|+i}-\left(\alpha\left(x-y\right)\mod{2^{\left|\alpha\right|+i+1}}\right)\right|}{2^{u-s}}\right)
+\frac{1}{2^{u-\left|\alpha\right|-i}}\cdot & \max\left(0,\frac{2^{u-s}-\left|2^{\left|\alpha\right|+i-1}-\left(\alpha\left(x-y\right)\mod{2^{\left|\alpha\right|+i}}\right)\right|}{2^{u-s}}\right)\,.
 \end{align*}
 
 \end_inset
@@ -2732,14 +2750,23 @@ most
 \begin_inset Formula $\Pr_{b\in F\left(\beta\right)}\left[h_{a,b}\left(x\right)=h_{a,b}\left(y\right)\right]$
 \end_inset
 
- equals:
+ equals,
+ where 
+\begin_inset Formula $w=ax+\beta2^{u-s-\left|\beta\right|}$
+\end_inset
+
+ and 
+\begin_inset Formula $v=ay+\beta2^{u-s-\left|\beta\right|}$
+\end_inset
+
+:
 \begin_inset Formula 
 \[
 \begin{cases}
-\frac{\iota\left(u\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}} & v-u\mod{2^{u}}<2^{u-s}\land u\mod{2^{u}}>v\mod{2^{u}}\\
-1+\frac{\iota\left(u\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}} & v-u\mod{2^{u}}<2^{u-s}\land u\mod{2^{u}}\le v\mod{2^{u}}\\
-\frac{\iota\left(v\right)-\iota\left(u\right)}{2^{u-s-\left|\beta\right|}} & u-v\mod{2^{u}}<2^{u-s}\land v\mod{2^{u}}>u\mod{2^{u}}\\
-1+\frac{\iota\left(v\right)-\iota\left(u\right)}{2^{u-s-\left|\beta\right|}} & u-v\mod{2^{u}}<2^{u-s}\land v\mod{2^{u}}\le u\mod{2^{u}}\\
+\frac{\iota\left(w\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}} & v-w\mod{2^{u}}<2^{u-s}\land w\mod{2^{u-s}}>v\mod{2^{u-s}}\\
+1+\frac{\iota\left(w\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}} & v-w\mod{2^{u}}<2^{u-s}\land w\mod{2^{u-s}}\le v\mod{2^{u-s}}\\
+\frac{\iota\left(v\right)-\iota\left(w\right)}{2^{u-s-\left|\beta\right|}} & w-v\mod{2^{u}}<2^{u-s}\land v\mod{2^{u-s}}>w\mod{2^{u-s}}\\
+1+\frac{\iota\left(v\right)-\iota\left(w\right)}{2^{u-s-\left|\beta\right|}} & w-v\mod{2^{u}}<2^{u-s}\land v\mod{2^{u-s}}\le w\mod{2^{u-s}}\\
 0 & \text{otherwise}
 \end{cases}
 \]
@@ -2812,30 +2839,48 @@ p & =\Pr\left[\left(ax_{h}2^{i}+ac+b\right)\mod{2^{u}}\div2^{u-s}=\left(ay_{h}2^
 First,
  we address the easy case,
  when 
-\begin_inset Formula $\left|\alpha\right|+i<u-s$
+\begin_inset Formula $\left|\alpha\right|+i\le u-s$
 \end_inset
 
 .
- Then 
+ Then since 
+\begin_inset Formula $x_{h}-y_{h}$
+\end_inset
+
+ is odd,
+ 
 \begin_inset Formula $a'\left(x_{h}-y_{h}\right)\mod{2^{u-\left|\alpha\right|-i}}$
 \end_inset
 
- is uniformly distributed over odd multiples of 
+ is uniformly distributed over 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u-\left|\alpha\right|-i}-1\right\} $
+\end_inset
+
+,
+ and 
+\begin_inset Formula $a'y_{h}2^{\left|\alpha\right|+i}$
+\end_inset
+
+ over all multiples of 
 \begin_inset Formula $2^{\left|\alpha\right|+i}$
+\end_inset
+
+ in 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u}-1\right\} $
 \end_inset
 
 .
  Let 
 \begin_inset Formula 
 \begin{align*}
-u & =a'x_{h}2^{\left|\alpha\right|+i}+\alpha x_{h}2^{i}+ac\mod{2^{u}}\\
+w & =a'x_{h}2^{\left|\alpha\right|+i}+\alpha x_{h}2^{i}+ac\mod{2^{u}}\\
 v & =a'y_{h}2^{\left|\alpha\right|+i}+\alpha y_{h}2^{i}+ac\mod{2^{u}}
 \end{align*}
 
 \end_inset
 
 Then the distribution of 
-\begin_inset Formula $u-v$
+\begin_inset Formula $w-v$
 \end_inset
 
  matches that of 
@@ -2847,8 +2892,8 @@ Then the distribution of
 \begin_inset Formula $\delta$
 \end_inset
 
- ranges over the odd integers 
-\begin_inset Formula $\left\{ 1,3,\ldots,2^{u-\left|\alpha\right|-i}-1\right\} $
+ ranges over the integers 
+\begin_inset Formula $\left\{ 0,\ldots,2^{u-\left|\alpha\right|-i}-1\right\} $
 \end_inset
 
 .
@@ -2865,108 +2910,80 @@ nolink "false"
 
 ,
  for any given signed difference 
-\begin_inset Formula $u-v\in\left\{ -2^{u-1},\ldots,2^{u-1}\right\} $
+\begin_inset Formula $w-v\in\left\{ -2^{u-1},\ldots,2^{u-1}\right\} $
 \end_inset
 
 ,
  
 \begin_inset Formula 
 \[
-\Pr\left[u+b\mod{2^{u}\div2^{u-s}}=v+b\mod{2^{u}\div2^{u-s}}\right]=\max\left(0,\frac{2^{u-s}-\left|u-v\right|}{2^{u-s}}\right)
+\Pr\left[w+b\mod{2^{u}\div2^{u-s}}=v+b\mod{2^{u}\div2^{u-s}}\right]=\max\left(0,\frac{2^{u-s}-\left|w-v\right|}{2^{u-s}}\right)
 \]
 
 \end_inset
 
-If 
-\begin_inset Formula $\left|\alpha\right|=0$
+Since 
+\begin_inset Formula $u-s\ge\left|\alpha\right|+i$
 \end_inset
 
 ,
- then 
-\begin_inset Formula $u-v$
-\end_inset
-
- will always (over 
-\begin_inset Formula $\delta$
-\end_inset
-
-) be an odd multiple of 
-\begin_inset Formula $2^{i}$
-\end_inset
-
- because 
-\begin_inset Formula $\delta$
-\end_inset
-
- is odd;
- and otherwise 
-\begin_inset Formula $u-v$
-\end_inset
-
- will always be an odd multiple of 
-\begin_inset Formula $2^{i}$
-\end_inset
-
- because 
-\begin_inset Formula $\alpha\left(x_{h}-y_{h}\right)$
-\end_inset
-
- is odd.
- The number of intersections between 
-\begin_inset Formula $u-v$
+ we can pair up intersections between 
+\begin_inset Formula $w-v$
 \end_inset
 
  and 
-\begin_inset Formula $\left\{ -2^{u-s},\ldots,2^{u-s}\right\} $
-\end_inset
-
- will be 
-\begin_inset Formula $\frac{2^{u-s+1}}{2^{\left|\alpha\right|+i+1}}\ge2$
+\begin_inset Formula $\left\{ -2^{u-s},\ldots,2^{u-s}-1\right\} $
 \end_inset
 
 ,
- and one can pair up intersections 
-\begin_inset Formula $d_{1}$
+ matching value 
+\begin_inset Formula $z_{1}<0$
 \end_inset
 
  with 
-\begin_inset Formula $u-v<0$
-\end_inset
-
- with intersections 
-\begin_inset Formula $d_{2}$
-\end_inset
-
- for 
-\begin_inset Formula $u-v>0$
+\begin_inset Formula $z_{2}=z_{1}+2^{u-s}\ge0$
 \end_inset
 
  so that 
-\begin_inset Formula $\left|d_{1}\right|+\left|d_{2}\right|=2^{u-s}$
+\begin_inset Formula $\left|z_{1}\right|+\left|z_{2}\right|=2^{u-s}$
 \end_inset
 
 .
- Each intersection will on average have collision probability 
+ (If 
+\begin_inset Formula $w-v=\pm2^{u-s}$
+\end_inset
+
+,
+ the contribution to the probability is zero and so it does no matter whether we match intersections in 
+\begin_inset Formula $\left\{ -2^{u-s},\ldots,2^{u-s}-1\right\} $
+\end_inset
+
+ or 
+\begin_inset Formula $\left\{ -2^{u-s}+1,\ldots,2^{u-s}\right\} $
+\end_inset
+
+.) Since on average each pair has collision probability 
 \begin_inset Formula $\frac{1}{2}$
 \end_inset
 
 ,
  and since there are 
-\begin_inset Formula $\frac{2^{u-s+1}}{2^{\left|\alpha\right|+i+1}}$
+\begin_inset Formula $\frac{2^{u-s+1}}{2^{\left|\alpha\right|+i}}$
 \end_inset
 
  intersecting values out of 
-\begin_inset Formula $2^{u-\left|\alpha\right|-i-1}$
+\begin_inset Formula $2^{u-\left|\alpha\right|-i}$
 \end_inset
 
- values of 
+ candidate values of 
 \begin_inset Formula $\delta$
 \end_inset
 
- ,
+,
+ 
 \begin_inset Formula 
 \[
-p=\frac{1}{2}\cdot\frac{2^{u-s+1}}{2^{\left|\alpha\right|+i+1}}\cdot\frac{1}{2^{u-\left|\alpha\right|-i-1}}=\frac{1}{2^{s}}
+p=\frac{1}{2}\cdot\frac{2^{u-s+1}}{2^{\left|\alpha\right|+i}}\cdot\frac{1}{2^{u-\left|\alpha\right|-i}}=\frac{1}{2^{s}}\,.
 \]
 
 \end_inset
@@ -2977,7 +2994,7 @@ p=\frac{1}{2}\cdot\frac{2^{u-s+1}}{2^{\left|\alpha\right|+i+1}}\cdot\frac{1}{2^{
 \begin_layout Proof
 In the hard case,
  
-\begin_inset Formula $\left|\alpha\right|+i\ge u-s$
+\begin_inset Formula $\left|\alpha\right|+i>u-s$
 \end_inset
 
 ,
@@ -2986,16 +3003,46 @@ In the hard case,
 \end_inset
 
  and 
-\begin_inset Formula $\left\{ -2^{u-s},\ldots,2^{u-s}\right\} $
+\begin_inset Formula $\left\{ -2^{u-s}+1,\ldots,2^{u-s}-1\right\} $
 \end_inset
 
 .
- As before,
- the distribution of 
-\begin_inset Formula $u-v$
+ The logic is essentially the same between the sub-cases 
+\begin_inset Formula $\left|\alpha\right|+i\ge u$
 \end_inset
 
- matches that of 
+ (for which 
+\begin_inset Formula $w-v$
+\end_inset
+
+ is fixed and unaffected by 
+\begin_inset Formula $a'$
+\end_inset
+
+) and 
+\begin_inset Formula $\left|\alpha\right|+i<u$
+\end_inset
+
+ (where 
+\begin_inset Formula $w-v$
+\end_inset
+
+ may take 
+\begin_inset Formula $2^{u-\left|\alpha\right|-i}$
+\end_inset
+
+ possible values,
+ depending on 
+\begin_inset Formula $a'$
+\end_inset
+
+).
+ As before,
+ the distribution of 
+\begin_inset Formula $w-v$
+\end_inset
+
+ matches 
 \begin_inset Formula $\delta2^{\left|\alpha\right|+i}+\alpha\left(x_{h}-y_{h}\right)2^{i}\pmod{2^{u}}$
 \end_inset
 
@@ -3004,57 +3051,37 @@ In the hard case,
 \begin_inset Formula $\delta$
 \end_inset
 
- ranges over odd integers in 
-\begin_inset Formula $\left\{ 1,3,\ldots,2^{u-\left|\alpha\right|-i}-1\right\} $
-\end_inset
-
-.
- Write 
-\begin_inset Formula $\delta=2\gamma+1$
-\end_inset
-
- for 
-\begin_inset Formula $\gamma\in\left\{ 0,\ldots,2^{u-\left|\alpha\right|-i-1}-1\right\} $
+ ranges over integers in 
+\begin_inset Formula $\left\{ 0,\ldots,2^{\max\left(u-\left|\alpha\right|-i,0\right)}-1\right\} $
 \end_inset
 
 .
  We have an intersection if 
-\begin_inset Formula $d'=\left(\alpha\left(x_{h}-y_{h}\right)2^{i}+2^{\left|\alpha\right|+i}\right)\pmod{2^{\left|\alpha\right|+i+1}}$
+\begin_inset Formula $\alpha\left(x_{h}-y_{h}\right)2^{i}$
 \end_inset
 
- is in 
+ is within 
 \begin_inset Formula $\left\{ -2^{u-s},\ldots,2^{u-s}\right\} $
 \end_inset
 
-,
- and in that case it will have value 
-\begin_inset Formula $\frac{2^{u-s}-\left|d'\right|}{2^{u-s}}$
+ of any multiple of 
+\begin_inset Formula $2^{\left|\alpha\right|+i}$
 \end_inset
 
 .
- Since 
-\begin_inset Formula $\left|\alpha\right|+i\ge u-s$
+ Consider the signed difference 
+\begin_inset Formula $d'=\left(\alpha\left(x_{h}-y_{h}\right)2^{i}\right)\pmod{\min\left(2^{\left|\alpha\right|+i},2^{u}\right)}$
 \end_inset
 
-,
- equivalently for 
-\begin_inset Formula $d''=\alpha\left(x_{h}-y_{h}\right)2^{i}\mod{2^{\left|\alpha\right|+i+1}}$
-\end_inset
-
- (a value in 
-\begin_inset Formula $\left\{ 0,\ldots,2^{\left|\alpha\right|+i+1}-1\right\} $
-\end_inset
-
-) the value of the intersection is 
-\begin_inset Formula $\max\left(0,\frac{2^{u-s}-\left|2^{\left|\alpha\right|+i}-d''\right|}{2^{u-s}}\right)$
-\end_inset
-
-,
- so
+;
+ our final collision probability will be,
+ explicitly calculating the absolute value of the signed difference:
 \begin_inset Formula 
-\[
-p=\frac{1}{2^{u-\left|\alpha\right|-i-1}}\cdot\max\left(0,\frac{2^{u-s}-\left|2^{\left|\alpha\right|+i}-\left(\alpha\left(x-y\right)\mod{2^{\left|\alpha\right|+i+1}}\right)\right|}{2^{u-s}}\right)\,.
-\]
+\begin{align*}
+p & =\frac{1}{2^{\max\left(u-\left|\alpha\right|-i,0\right)}}\max\left(0,\frac{2^{u-s}-\left|d'\right|}{2^{u-s}}\right)\\
+\text{where}\quad d' & =\min\left(2^{\left|\alpha\right|+i-1},2^{u-1}\right)-\\
+ & \quad\left|\min\left(2^{\left|\alpha\right|+i-1},2^{u-1}\right)-\left(\alpha\left(x-y\right)\mod{\min\left(2^{\left|\alpha\right|+i-1},2^{u-1}\right)}\right)\right|\,.
+\end{align*}
 
 \end_inset
 
@@ -3084,7 +3111,7 @@ Finally,
 
 ,
  
-\begin_inset Formula $u=ax+\beta2^{u-s-\left|\beta\right|}$
+\begin_inset Formula $w=ax+\beta2^{u-s-\left|\beta\right|}$
 \end_inset
 
  and 
@@ -3096,22 +3123,22 @@ Finally,
 \begin_inset Formula 
 \begin{align*}
 p & :=\Pr\left[\left(ax+b\right)\mod{2^{u}}\div2^{u-s}=\left(ay+b\right)\mod{2^{u}}\div2^{u-s}\right]\\
- & =\Pr\left[\left(u+b'\right)\mod{2^{u}}\div2^{u-s}=\left(v+b'\right)\mod{2^{u}}\div2^{u-s}\right]
+ & =\Pr\left[\left(w+b'\right)\mod{2^{u}}\div2^{u-s}=\left(v+b'\right)\mod{2^{u}}\div2^{u-s}\right]
 \end{align*}
 
 \end_inset
 
 Consider the case where 
-\begin_inset Formula $d=v-u\mod{2^{u}}<2^{u-s}$
+\begin_inset Formula $d=v-w\mod{2^{u}}<2^{u-s}$
 \end_inset
 
 .
  (If 
-\begin_inset Formula $v-u\mod{2^{u}}\ge2^{u-s}$
+\begin_inset Formula $v-w\mod{2^{u}}\ge2^{u-s}$
 \end_inset
 
  and 
-\begin_inset Formula $u-v\mod{2^{u}}\ge2^{u-s}$
+\begin_inset Formula $w-v\mod{2^{u}}\ge2^{u-s}$
 \end_inset
 
 ,
@@ -3121,7 +3148,7 @@ Consider the case where
 
 ,
  so this is one half of the nontrivial case.) Define 
-\begin_inset Formula $\iota\left(w\right)=\max\left(0,w\mod{2^{u-s}}-\left(2^{u-s}-2^{u-s-\left|\beta\right|}\right)\right)$
+\begin_inset Formula $\iota\left(z\right)=\max\left(0,z\mod{2^{u-s}}-\left(2^{u-s}-2^{u-s-\left|\beta\right|}\right)\right)$
 \end_inset
 
  to count the 
@@ -3129,7 +3156,7 @@ Consider the case where
 \end_inset
 
  for which 
-\begin_inset Formula $\left(w+b'\right)\div2^{u-s}>w\div2^{u-s}$
+\begin_inset Formula $\left(z+b'\right)\div2^{u-s}>z\div2^{u-s}$
 \end_inset
 
 .
@@ -3137,12 +3164,12 @@ Consider the case where
 \end_layout
 
 \begin_layout Itemize
-\begin_inset Formula $p=\frac{\iota\left(u\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}}$
+\begin_inset Formula $p=\frac{\iota\left(w\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}}$
 \end_inset
 
 :
  holds if 
-\begin_inset Formula $u\mod{2^{u}>v\mod{2^{u}}}$
+\begin_inset Formula $w\mod{2^{u-s}}>v\mod{2^{u-s}}$
 \end_inset
 
  – at 
@@ -3151,7 +3178,7 @@ Consider the case where
 
  we have no collision,
  and increasing 
-\begin_inset Formula $u\div2^{u}$
+\begin_inset Formula $w\div2^{u}$
 \end_inset
 
  but not 
@@ -3162,12 +3189,12 @@ Consider the case where
 \end_layout
 
 \begin_layout Itemize
-\begin_inset Formula $p=1+\frac{\iota\left(u\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}}$
+\begin_inset Formula $p=1+\frac{\iota\left(w\right)-\iota\left(v\right)}{2^{u-s-\left|\beta\right|}}$
 \end_inset
 
 :
  holds if 
-\begin_inset Formula $u\mod{2^{u}\le v\mod{2^{u}}}$
+\begin_inset Formula $w\mod{2^{u-s}}\le v\mod{2^{u-s}}$
 \end_inset
 
  – at 
@@ -3180,7 +3207,7 @@ Consider the case where
 \end_inset
 
  but not 
-\begin_inset Formula $u\div2^{u}$
+\begin_inset Formula $w\div2^{u}$
 \end_inset
 
  will prevent a collision
@@ -3189,16 +3216,16 @@ Consider the case where
 \begin_layout Standard
 Note:
  if 
-\begin_inset Formula $u-v\mod{2^{u}}\ge2^{u-s}$
+\begin_inset Formula $w-v\mod{2^{u}}\ge2^{u-s}$
 \end_inset
 
 ,
  then the cases have probabilities 
-\begin_inset Formula $\frac{\iota\left(v\right)-\iota\left(u\right)}{2^{u-s-\left|\beta\right|}}$
+\begin_inset Formula $\frac{\iota\left(v\right)-\iota\left(w\right)}{2^{u-s-\left|\beta\right|}}$
 \end_inset
 
  and 
-\begin_inset Formula $1+\frac{\iota\left(v\right)-\iota\left(u\right)}{2^{u-s-\left|\beta\right|}}$
+\begin_inset Formula $1+\frac{\iota\left(v\right)-\iota\left(w\right)}{2^{u-s-\left|\beta\right|}}$
 \end_inset
 
 .

@@ -11,7 +11,7 @@ trait DictTrial {
     fn new(data: &[(u64, u64)], u_bits: u32) -> Box<dyn DictTrial>
     where
         Self: Sized;
-    fn test_par(&self, data: &[u64]);
+    fn test_par(&self, data: &[u64], result: u64);
     // todo: add test_chain, with number of steps to run for
 }
 impl<H> DictTrial for DictTrialImpl<H>
@@ -27,12 +27,12 @@ where
         })
     }
     #[inline(never)]
-    fn test_par(&self, queries: &[u64]) {
+    fn test_par(&self, queries: &[u64], result: u64) {
         let mut x = 0;
         for q in queries.iter() {
             x += self.dict.query(*q).unwrap();
         }
-        std::hint::black_box(x);
+        assert!(std::hint::black_box(x) == result);
     }
 }
 
@@ -51,6 +51,10 @@ fn main() {
         _ => unimplemented!(),
     };
     let queries: Vec<u64> = std::hint::black_box(data.iter().map(|x| x.0).collect());
+    let mut result: u64 = 0;
+    for (_k, v) in data.iter() {
+        result = result.wrapping_add(*v);
+    }
     let t0 = Instant::now();
 
     let u_bits = u64::BITS;
@@ -66,17 +70,21 @@ fn main() {
         "xor+hmp01" => DictTrialImpl::<XorReducedDict>::new(&data, u_bits),
         "oms+hmp01" => DictTrialImpl::<OMSxHMP01Dict>::new(&data, u_bits),
         "oms+fks" => DictTrialImpl::<OMSxFKSDict>::new(&data, u_bits),
+        "raman95" => DictTrialImpl::<Raman95Dict>::new(&data, u_bits),
+        "oma+slow" => DictTrialImpl::<OMADict>::new(&data, u_bits),
+        "oma+fast" => DictTrialImpl::<FastOMADict>::new(&data, u_bits),
+        "oma+disp" => DictTrialImpl::<OMAxDispDict>::new(&data, u_bits),
         "r09a" => DictTrialImpl::<Ruzic09Dict>::new(&data, u_bits),
         _ => panic!(),
     };
 
     let t1 = Instant::now();
 
-    dict.test_par(&queries);
+    dict.test_par(&queries, result);
 
     let t2 = Instant::now();
     println!(
-        "type: {} size: {}; construction time: {} secs; query time: {} secs",
+        "type: {} size: {}; construction time: {} secs; (par)query time: {} secs",
         dict_type,
         sz,
         t1.duration_since(t0).as_secs_f64(),

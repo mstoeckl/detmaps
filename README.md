@@ -47,7 +47,9 @@ functions are usually fast to evaluate. There are three approximate categories:
     time.
   - Raman95: `[2^b] -> [O(n^2)]` with `O(b)` bits of space, but takes `O(n^2 b)`
     time. Uses the odd-multiply-shift hash family. There is a (as yet
-    unpublished) algorithm using `O(n b (log n)^2)` time.
+    unpublished) algorithm using `O(n b log n)` time. Using an
+    odd-multiply-add-shift family reduces the output space usage slightly and is
+    also doable in `O(n b log n)` time.
   - Derandomized tabulation hashing: `[n^{2k}]->[n^2]` using `O(n k polylog n)`
     space and construction time, but can be fast to evaluate when `n` is small.
   - (Not implemented) AlonN94, `O(b)` space, `O(n b (log n)^3)` time.
@@ -129,9 +131,9 @@ MPLv2
 See the source code for details on the implementations being compared and how
 they deviate from the ideal constructions in the papers.
 
-- rand32: pseudorandom u64 keys in 0..u32::MAX
-
 - rand64: pseudorandom u64 keys in 0..u64::MAX
+
+- rand32: pseudorandom u64 keys in 0..u32::MAX (and parameter `u_bits = 32`)
 
 - setup: Time to construct the dictionary
 
@@ -141,9 +143,19 @@ they deviate from the ideal constructions in the papers.
 - chainq: Query every element _in_ the dictionary, with a logical dependency
   between successive dictionary queries
 
-Summary plots showing _all_ results (for individual series, use `figures.py`):
+To generate all plots, use `figures.py`.
 
-![rand32 results](rand32.svg) ![rand64 results](rand64.svg)
+- chainq vs parq performance: even without explicitly batch-optimizing the code,
+  much of the query latency is hidden (by the compiler and CPU) for simple hash
+  functions.
+
+![rand64 parq](parq-rand64.svg) ![rand64 chainq](chainq-rand64.svg)
+
+- Universe reduction performance depends strongly on the input width, with
+  universe reduction stages becoming entirely unnecessary if the input space is
+  small enough:
+
+![rand64 setup](setup-rand64.svg) ![rand32 setup](setup-rand32.svg)
 
 In general, dictionaries with faster query times take longer to construct; which
 to use depends on the tasks the dictionary is used for.

@@ -109,9 +109,9 @@ impl Iterator for RandomSubsetIterator<'_> {
          * If `u` is zero, u.ln() _should_ return -inf, which expm1 should map to -1.
          */
 
-        let u: f64 = StandardUniform::default().sample(self.rng);
-        // issue: `exp_m1` and `log` are, per standard library, non-deterministic and may even vary
-        // between _executions_.
+        let u: f64 = StandardUniform::default().sample(self.rng); // note: this uses 2^53 equispaced values, and never produces tiny (e.g. 2^-80) values
+                                                                  // issue: `exp_m1` and `log` are, per standard library, non-deterministic and may even vary
+                                                                  // between _executions_.
         let p = -f64::exp_m1(f64::ln(u) * (1. / (self.count as f64)));
 
         /* Binomial::sample from rand_distr 0.5.1 currently has a panic issue when nmk is
