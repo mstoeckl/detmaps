@@ -288,6 +288,7 @@ fn main() {
         ("raman95", make_bench_fn::<Raman95Dict>()),
         ("oma+slow", make_bench_fn::<OMADict>()),
         ("oma+disp", make_bench_fn::<OMAxDispDict>()),
+        ("ocm+disp", make_bench_fn::<OCMxDispDict>()),
     ];
 
     if let Some(fdstr) = matches.get_one::<String>("run") {

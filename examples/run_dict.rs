@@ -74,6 +74,8 @@ fn main() {
         "oma+slow" => DictTrialImpl::<OMADict>::new(&data, u_bits),
         "oma+fast" => DictTrialImpl::<FastOMADict>::new(&data, u_bits),
         "oma+disp" => DictTrialImpl::<OMAxDispDict>::new(&data, u_bits),
+        "ocm+fast" => DictTrialImpl::<FastOCMDict>::new(&data, u_bits),
+        "ocm+disp" => DictTrialImpl::<OCMxDispDict>::new(&data, u_bits),
         "r09a" => DictTrialImpl::<Ruzic09Dict>::new(&data, u_bits),
         _ => panic!(),
     };

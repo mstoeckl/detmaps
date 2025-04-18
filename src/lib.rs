@@ -3685,6 +3685,7 @@ fn bit_rev_sort(arr: &mut [u64]) {
 }
 
 /** Calculate the initial interaction counts for each difference level of the given key list.
+ * (for the OMS directed interaction idea, values are divided by two)
  *
  * `rev_sorted_keys` should be sorted by reversed bits, and shifted by (u64::BITS - u_bits).
  *
@@ -3700,11 +3701,7 @@ fn bit_rev_sort(arr: &mut [u64]) {
  * Runtime: O(n + b).
  */
 #[inline(never)]
-fn oms_base_interaction_count(
-    rev_sorted_keys: &[u64],
-    _u_bits: u32,
-    output_bits: u32,
-) -> Vec<u128> {
+fn base_interaction_count(rev_sorted_keys: &[u64], _u_bits: u32, output_bits: u32) -> Vec<u128> {
     let max_bit = u64::BITS - output_bits;
     let mut counters = vec![0u128; max_bit as usize];
 
@@ -3755,7 +3752,7 @@ fn oms_base_interaction_count(
             let count0 = top.pos - segment_start;
             let count1 = i - top.pos;
             /* Factor two included because we count _directed_ interactions. */
-            let product = 2 * (count0 as u128) * (count1 as u128);
+            let product = (count0 as u128) * (count1 as u128);
             counters[top.bit as usize] = counters[top.bit as usize].wrapping_add(product);
         }
 
@@ -3767,7 +3764,7 @@ fn oms_base_interaction_count(
         let segment_start = if let Some(s) = stack.last() { s.pos } else { 0 };
         let count0 = top.pos - segment_start;
         let count1 = rev_sorted_keys.len() - top.pos;
-        let product = 2 * (count0 as u128) * (count1 as u128);
+        let product = (count0 as u128) * (count1 as u128);
         counters[top.bit as usize] = counters[top.bit as usize].wrapping_add(product);
     }
 
@@ -3790,7 +3787,7 @@ fn oms_base_interaction_count(
                 }
 
                 let count0 = (interval_end - interval_start) as u64 - count1;
-                let pairs = 2 * (count0 as u128) * (count1 as u128);
+                let pairs = (count0 as u128) * (count1 as u128);
                 reference[i as usize] = reference[i as usize].checked_add(pairs).unwrap();
                 interval_start = interval_end;
             }
@@ -3840,7 +3837,10 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
     let mut a = 1;
     // let mut last_wt = None;
 
-    let base_counts = oms_base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+    let mut base_counts = base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+    for bc in base_counts.iter_mut() {
+        *bc *= 2;
+    }
     let mut last_interaction_counts = base_counts.clone();
 
     let mut last_wt = None;
@@ -4163,7 +4163,10 @@ fn oms_batch_construction2(keys: &[u64], u_bits: u32, output_bits: u32) -> Multi
     let mut a: u64 = 1;
     // let mut last_wt = None;
 
-    let base_counts = oms_base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+    let mut base_counts = base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+    for bc in base_counts.iter_mut() {
+        *bc *= 2;
+    }
     let mut last_interaction_counts = base_counts.clone();
 
     let mut last_wt = None;
@@ -5868,11 +5871,7 @@ fn oma_batch_find_multiplier(keys: &[u64], u_bits: u32, output_bits: u32) -> u64
 
     /* The same base interaction counts work for OMS & OMA hashes, _except_ that the OMS counts are
      * multiplied by a factor of two. */
-    let mut base_counts = oms_base_interaction_count(rev_sorted_keys, u_bits, output_bits);
-    for bc in base_counts.iter_mut() {
-        assert!(*bc % 2 == 0);
-        *bc /= 2;
-    }
+    let base_counts = base_interaction_count(rev_sorted_keys, u_bits, output_bits);
 
     // TODO: arbitrary values should suffice here, since values should only be read from after being set;
     // for base counts, the base array is preferable due to being smaller
@@ -6546,4 +6545,559 @@ impl PerfectHash<u64, u64> for RandOMA {
     fn total_memory_usage(&self) -> Option<usize> {
         Some(std::mem::size_of::<Self>())
     }
+}
+
+/* ---------------------------------------------------------------------------- */
+
+/* The hash algorithm underlying a 1-approximately universal variant of the
+ * odd-carryless-multiply-shift family. */
+struct CarrylessMultiplyShiftHash {
+    a: u64, /* (typically) odd integer multiple of 1<<shift */
+    shift: u32,
+}
+impl CarrylessMultiplyShiftHash {
+    #[inline(always)]
+    fn query(&self, key: u64) -> u64 {
+        (util::clmul(key, self.a) as u64) >> self.shift
+    }
+    #[inline(always)]
+    fn output_bits(&self) -> u32 {
+        if self.a == 0 {
+            0
+        } else {
+            u64::BITS - self.shift
+        }
+    }
+}
+
+pub struct FastOCM(CarrylessMultiplyShiftHash);
+pub type FastOCMDict = HDict<FastOCM>;
+impl PerfectHash<u64, u64> for FastOCM {
+    fn new(keys: &[u64], u_bits: u32) -> Self {
+        if keys.len() <= 1 {
+            return FastOCM(CarrylessMultiplyShiftHash { a: 0, shift: 0 });
+        }
+        /* Output space > n(n-1)/2 suffices. */
+        let output_bits =
+            next_log_power_of_two(keys.len().wrapping_mul(keys.len().wrapping_sub(1)) / 2 + 1)
+                .max(1);
+        assert!(output_bits < u64::BITS);
+
+        if output_bits > u_bits {
+            /* No-op hash. */
+            return FastOCM(CarrylessMultiplyShiftHash {
+                a: 1 << (u64::BITS - u_bits),
+                shift: u64::BITS - u_bits,
+            });
+        }
+        assert!(output_bits <= u_bits);
+
+        FastOCM(ocm_batch_construction(keys, u_bits, output_bits))
+    }
+    fn query(&self, key: u64) -> u64 {
+        self.0.query(key)
+    }
+    fn output_bits(&self) -> u32 {
+        self.0.output_bits()
+    }
+    fn max_memory_read(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
+}
+
+#[test]
+fn test_ocm_fast() {
+    test_perfect_hash::<FastOCM>();
+}
+
+/* Given mult_keys, divided into subsegments by the differing `i+1`st bit of the input,
+ * with each sorted according to bit reversed bits at and above `start_bits`, merge
+ * the subsegments.
+ */
+fn batch_merge_ocm(mkeys: &mut [u64], scratch: &mut [u64], start_bits: u32, i_bits: u32) {
+    assert!(mkeys.len() == scratch.len());
+
+    fn merge_sorted_lists(a: &[u64], b: &[u64], high_mask: u64, output: &mut [u64]) {
+        if a.is_empty() {
+            output.copy_from_slice(b);
+            return;
+        }
+        if b.is_empty() {
+            output.copy_from_slice(a);
+            return;
+        }
+        assert!(a.len() + b.len() == output.len());
+        /* Note: this is a standard merge and there probably exist much faster branchless
+         * and/or SIMD variants. */
+
+        let mut output_iter = output.iter_mut();
+        let mut a_iter = a.iter();
+        let mut b_iter = b.iter();
+
+        let mut a_val = *a_iter.next().unwrap();
+        let mut b_val = *b_iter.next().unwrap();
+
+        loop {
+            if (a_val & high_mask).reverse_bits() < (b_val & high_mask).reverse_bits() {
+                *output_iter.next().unwrap() = a_val;
+
+                if let Some(x) = a_iter.next() {
+                    a_val = *x;
+                } else {
+                    /* Only right values remaining */
+                    *output_iter.next().unwrap() = b_val;
+                    while let Some(y) = b_iter.next() {
+                        *output_iter.next().unwrap() = *y;
+                    }
+                    assert!(output_iter.next().is_none());
+                    return;
+                }
+            } else {
+                *output_iter.next().unwrap() = b_val;
+
+                if let Some(x) = b_iter.next() {
+                    b_val = *x;
+                } else {
+                    /* Only left values remaining */
+                    *output_iter.next().unwrap() = a_val;
+                    while let Some(y) = a_iter.next() {
+                        *output_iter.next().unwrap() = *y;
+                    }
+                    assert!(output_iter.next().is_none());
+                    return;
+                }
+            }
+        }
+    }
+
+    if mkeys.len() > 0 {
+        let sfx = mkeys[0] & ((1 << (i_bits + 1)) - 1);
+        for k in mkeys.iter() {
+            assert!(k & ((1 << (i_bits + 1)) - 1) == sfx);
+        }
+    }
+
+    let mut count_with_1 = 0;
+    for k in mkeys.iter() {
+        if k & (1 << (i_bits + 1)) != 0 {
+            count_with_1 += 1;
+        }
+    }
+    /* The multiplication may swap which keys has a zero vs one bit at position
+     * (i+1), but either all the keys with a zero bit should be first, or all those
+     * with a one bit, with no interleaving. */
+    let len0 = if count_with_1 < mkeys.len() && mkeys[0] & (1 << (i_bits + 1)) == 0 {
+        mkeys.len() - count_with_1
+    } else {
+        count_with_1
+    };
+
+    let (part0, part1) = mkeys.split_at(len0);
+    let high_mask: u64 = !((1 << start_bits) - 1);
+
+    merge_sorted_lists(part0, part1, high_mask, scratch);
+    mkeys.copy_from_slice(scratch);
+}
+
+/** Count the number of interacting keys for the OCM hash family, for a
+ * pair of (premultiplied) batches */
+fn compute_ocm_batch_ring_count(
+    keys_l: &[u64],
+    keys_r: &[u64],
+    u_bits: u32,
+    alpha_bits: u32,
+    i_bits: u32,
+    output_bits: u32,
+) -> u128 {
+    let mut count: u128 = 0;
+    let t = u_bits.min(alpha_bits + i_bits);
+    let target_mask = if t >= u64::BITS {
+        u64::MAX ^ ((1 << (u_bits - output_bits)) - 1)
+    } else {
+        (1 << t) - (1 << (u_bits - output_bits))
+    };
+
+    let mut left_start = 0;
+    let mut right_start = 0;
+    while left_start < keys_l.len() && right_start < keys_r.len() {
+        let kl = keys_l[left_start];
+        let kr = keys_r[right_start];
+
+        let dl = (kl & target_mask).reverse_bits();
+        let dr = (kr & target_mask).reverse_bits();
+
+        let left_end = if dl <= dr {
+            /* Advance left */
+            let mut e = left_start;
+            while e < keys_l.len() && (keys_l[e] & target_mask) == kl & target_mask {
+                e += 1;
+            }
+            e
+        } else {
+            left_start
+        };
+        let right_end = if dr <= dl {
+            /* Advance right */
+            let mut e = right_start;
+            while e < keys_r.len() && (keys_r[e] & target_mask) == kr & target_mask {
+                e += 1;
+            }
+            e
+        } else {
+            right_start
+        };
+
+        count += ((left_end - left_start) as u128) * ((right_end - right_start) as u128);
+        left_start = left_end;
+        right_start = right_end;
+    }
+
+    if false {
+        /* Brute-force calculation */
+        let mut brute_count = 0;
+        for kl in keys_l {
+            for kr in keys_r {
+                if (kl ^ kr) & target_mask == 0 {
+                    brute_count += 1;
+                }
+            }
+        }
+        assert!(brute_count == count, "{} {}", brute_count, count);
+        return brute_count;
+    }
+
+    count
+}
+
+fn ocm_batch_construction(
+    keys: &[u64],
+    u_bits: u32,
+    output_bits: u32,
+) -> CarrylessMultiplyShiftHash {
+    assert!(keys.len() < usize::MAX / 2); /* For wrapping index calculations */
+    assert!(output_bits <= u_bits, "{} {}", output_bits, u_bits);
+
+    let modu_mask = if u_bits >= u64::BITS {
+        u64::MAX
+    } else {
+        (1 << u_bits) - 1
+    };
+
+    /* To efficiently iterate over pairs of groups of keys whose lsb `i` bits match
+     * (and whose `i+1`th bit differs), it suffices to _sort_ the key set and then
+     * scan over the result. */
+    let mut rev_sorted_keys_vec = Vec::from(keys);
+
+    /* Note: if the source key set is _fixed_, then it may be practical to re-sort
+     * on every `b` iteration and multiply by `a` in-place. Or alternatively: _first_
+     * multiply by 'a', and _then_ sort the result by reversed bits, since
+     * `a` multiplication preserves lsb-prefix length for pairs. Although the
+     * difference isn't critical. */
+    bit_rev_sort(&mut rev_sorted_keys_vec);
+    let rev_sorted_keys: &[u64] = &rev_sorted_keys_vec;
+
+    /* Scratch storage table in which to write multiplied/sorted data */
+    let mut scratch = vec![0u64; rev_sorted_keys.len()];
+    let mut mult_keys = vec![0u64; rev_sorted_keys.len()];
+
+    let mut a: u64 = 1;
+
+    /* Base interaction counts also work for OCM. */
+    let base_counts = base_interaction_count(rev_sorted_keys, u_bits, output_bits);
+
+    // TODO: arbitrary values should suffice here, since values should only be read from after being set;
+    // for base counts, the base array is preferable due to being smaller
+    let mut last_interaction_counts: Vec<u128> = base_counts.clone();
+
+    let moduo_mask = (1 << (u_bits - output_bits)) - 1;
+    let target_mask = modu_mask ^ moduo_mask;
+
+    /* u128 suffices if (2 \binom{n}{2} <= u128::MAX, because the initial probabilities are all either 0 or 1/2^s,
+     * so the initial value is <= \binom{n}{2}; the weights checked will never increase above twice this. */
+    assert!((keys.len() as u128) * (keys.len() as u128).wrapping_sub(1) <= u128::MAX);
+
+    let mut last_wt: Option<u128> = None;
+    /* Bits in 'a' higher than or at u_bits have no effect on the output */
+    for b in 0..u_bits {
+        /* Calculate the "weight" (total expected collision value) of the extension of `a` by a 0-bit. This,
+         * plus the weight of the 1-bit extension, should equal the weight from the previous
+         * iteration. (Except in first round, where we find the initial weight of `a`.) */
+        let mut wt: u128 = 0;
+
+        let mut interaction_counts = last_interaction_counts.clone();
+
+        let alpha_bits = b + 1;
+
+        /* Can entirely ignore keys differing only on the top `o` bits, because multiplying
+         * them by 'a' never causes a collision */
+
+        let active_range = (u_bits - output_bits + 1).saturating_sub(alpha_bits)
+            ..(u_bits + 2)
+                .saturating_sub(alpha_bits)
+                .min(u_bits - output_bits);
+
+        for i in 0..active_range.start {
+            /* alpha is not large enough to bring level `i` differences into the
+             * top `o` bits; counts still match base values. */
+            assert!(alpha_bits + i <= u_bits - output_bits);
+            // println!("base count: {}, keylen={}, shift={}", base_counts[i  as usize], keys.len(), ext_shift);
+            wt = wt.checked_add(base_counts[i as usize]).unwrap()
+        }
+        for i in active_range.end..(u_bits - output_bits) {
+            /* Changes to alpha only affect bits that are already masked off. */
+            let ext_shift = output_bits;
+            wt = wt
+                .checked_add(interaction_counts[i as usize] << ext_shift)
+                .unwrap();
+        }
+
+        /* Fill array of `key*a` values. Note: since `a` is odd, multiplying by it is invertible,
+         * so one should be able to go from the old key list to the new by multiplying by
+         * (old_a^-1 * a). However, if doing this we would need to redo the bit-reversed sorting.
+         */
+        for (mk, k) in mult_keys.iter_mut().zip(rev_sorted_keys.iter()) {
+            *mk = (util::clmul(*k, a) as u64) & modu_mask;
+        }
+
+        for i_bits in active_range.clone().rev() {
+            let mod_bits = (alpha_bits + i_bits).min(u_bits);
+
+            let mut level_count: u128 = 0;
+            let msk_i = (1 << i_bits) - 1;
+            let mut interval_start = 0;
+            while interval_start < rev_sorted_keys.len() {
+                let common_prefix = rev_sorted_keys[interval_start] & msk_i;
+
+                /* note: this interval calculation can switch to operating on 'mult_keys' */
+                let mut count1 = 0;
+                let mut interval_end = interval_start;
+                while interval_end < rev_sorted_keys.len()
+                    && (rev_sorted_keys[interval_end] & msk_i) == common_prefix
+                {
+                    count1 += (rev_sorted_keys[interval_end] & (1 << i_bits)) >> i_bits;
+                    interval_end += 1;
+                }
+                let count0 = (interval_end - interval_start) - count1 as usize;
+
+                /* Possible average-case optimization: use scratch[..count0+count1] for slightly better
+                 * physical memory locality. */
+                let scratch_region = &mut scratch[interval_start..interval_end];
+                let (scratch0, scratch1) = scratch_region.split_at_mut(count0);
+
+                let (mul0, mul1) = mult_keys[interval_start..interval_end].split_at_mut(count0);
+
+                if i_bits == active_range.end - 1 {
+                    /* Sort both sets */
+                    mul0.sort_unstable_by_key(|k| (k & target_mask).reverse_bits());
+                    mul1.sort_unstable_by_key(|k| (k & target_mask).reverse_bits());
+                } else {
+                    batch_merge_ocm(mul0, scratch0, u_bits - output_bits, i_bits);
+                    batch_merge_ocm(mul1, scratch1, u_bits - output_bits, i_bits);
+
+                    if true {
+                        assert!(
+                            mul0.is_sorted_by_key(|k| (k & target_mask).reverse_bits()),
+                            "{:x?}",
+                            mul0
+                        );
+                        assert!(
+                            mul1.is_sorted_by_key(|k| (k & target_mask).reverse_bits()),
+                            "{:x?}",
+                            mul1
+                        );
+                    }
+                }
+
+                let count = if !mul0.is_empty() && !mul1.is_empty() {
+                    compute_ocm_batch_ring_count(
+                        &mul0,
+                        &mul1,
+                        u_bits,
+                        alpha_bits,
+                        i_bits,
+                        output_bits,
+                    )
+                } else {
+                    0_u128
+                };
+
+                level_count = level_count.wrapping_add(count);
+                interval_start = interval_end;
+            }
+
+            // 1/2^(u - mod_bits)
+            assert!(mod_bits >= b + i_bits);
+            let ext_shift = output_bits - (u_bits - mod_bits);
+            let interactions = level_count << ext_shift;
+            interaction_counts[i_bits as usize] = level_count;
+            wt = wt.checked_add(interactions).unwrap();
+        }
+        // println!("interaction counts: {:?}", interaction_counts);
+        last_interaction_counts = interaction_counts;
+
+        // println!("b={:2}, {}, a={:x}", b, wt, a);
+
+        if let Some(lwt) = last_wt {
+            /* Choose the sub-average branch. */
+            let twt = lwt.checked_mul(2).unwrap();
+            assert!(wt <= twt);
+            let wt1 = twt.checked_sub(wt).unwrap();
+
+            if wt1 < wt {
+                a |= 1 << b;
+                last_wt = Some(wt1);
+            } else {
+                last_wt = Some(wt);
+            }
+        } else {
+            last_wt = Some(wt);
+        }
+    }
+
+    CarrylessMultiplyShiftHash {
+        a: a << (u64::BITS - u_bits),
+        shift: u64::BITS - output_bits,
+    }
+}
+
+/** Like [OMSxDispHash], except using the OCM hash instead, which has a slightly reduced number of collisions. */
+pub struct OCMxDispHash {
+    // TODO: can this be made generic over bijection-shift hashes?
+    a1: u64,
+    mask: u64,
+    a2: u64,
+    shift_hi: u32,
+    shift_lo: u32,
+    displacements: Vec<u64>,
+    output_bits: u32,
+}
+pub type OCMxDispDict = HDict<OCMxDispHash>;
+
+impl PerfectHash<u64, u64> for OCMxDispHash {
+    fn new(keys: &[u64], u_bits: u32) -> Self {
+        /* First multiplication parameters are straightforward: reduce the space as far as possible
+         * without collisions */
+        let s_bits =
+            next_log_power_of_two(keys.len().wrapping_mul(keys.len().wrapping_sub(1)) / 2 + 1)
+                .max(1)
+                .min(u_bits); /* 1/2 instead of 1 from OMS */
+        assert!(s_bits < u64::BITS);
+        let primary_hash = ocm_batch_construction(keys, u_bits, s_bits);
+        let mask = u64::MAX ^ ((1 << primary_hash.shift) - 1);
+        let reduced_keys = Vec::from_iter(keys.iter().map(|k| primary_hash.query(*k)));
+
+        /* Compute hash and table parameters to minimize total space
+         * when used to implement a dictionary. */
+        let bytes_per_output = std::mem::size_of::<(u64, u64)>();
+        let bytes_per_table_entry = std::mem::size_of::<u64>();
+        let w = next_log_power_of_two(2 * keys.len() * keys.len().saturating_sub(1)).max(s_bits); /* 2 instead of 4 from OMS */
+        assert!(w >= s_bits, "{} {}", w, s_bits);
+        let n_bits = next_log_power_of_two(keys.len());
+        let val = (bytes_per_table_entry)
+            .checked_shl(w)
+            .unwrap()
+            .div_ceil(2 * bytes_per_output);
+        /* ceil(x/2) = ceil(ceil(x)/2) */
+        let ideal_r = next_log_power_of_two(val).div_ceil(2);
+
+        /* Number of output bits */
+        let r_bits = ideal_r.clamp(n_bits, w);
+        /* Number of table index bits */
+        let t_bits = w - r_bits;
+        /* Number of bits to XOR with (may be equal to or less than `r`) */
+        let lo_bits = s_bits.checked_sub(t_bits).unwrap();
+
+        if t_bits == 0 {
+            /* Special case: the displacement table is not needed.
+             *
+             * However, the specific shifts used to query can not shift the high bit region
+             * to zero, so instead zero the low bits and use an identity displacement map;
+             * this special case only occurs for tiny `n` so this is not expensive.
+             */
+            return OCMxDispHash {
+                a1: primary_hash.a,
+                mask,
+                a2: 1,
+                shift_hi: u64::BITS - s_bits,
+                shift_lo: u64::BITS - s_bits,
+                displacements: (0..(1 << s_bits)).collect(),
+                output_bits: s_bits,
+            };
+        }
+
+        assert!(
+            lo_bits <= r_bits,
+            "u={}, s={}, w={}, ideal_r={}, r={}, nb={},t={}, lo={}",
+            u_bits,
+            s_bits,
+            w,
+            ideal_r,
+            r_bits,
+            n_bits,
+            t_bits,
+            lo_bits
+        );
+
+        // TODO: if lo_bits < floor(log n), then one can place size >= 2 sets in the first 2^lo_bits, and fill
+        // remaining slots in [n] with size-1 sets, producing a _packed_ output set
+
+        let secondary_hash = ocm_batch_construction(&reduced_keys, s_bits, t_bits);
+
+        let split_keys: Vec<(u64, u64)> = reduced_keys
+            .iter()
+            .map(|k| {
+                let d = (util::clmul(*k, secondary_hash.a) as u64) >> (u64::BITS - s_bits);
+
+                assert!(*k >> s_bits == 0 && d >> s_bits == 0);
+                let hi = d >> lo_bits;
+                let lo = d & ((1 << lo_bits) - 1);
+                assert!(hi >> t_bits == 0);
+                assert!(lo >> lo_bits == 0);
+                (hi, lo)
+            })
+            .collect();
+
+        // Test variant: explicitly verify that collision counts are as expected?
+
+        let displacements = compute_displacement(&split_keys, t_bits, r_bits);
+
+        let ret = OCMxDispHash {
+            a1: primary_hash.a,
+            mask,
+            a2: secondary_hash.a >> (u64::BITS - s_bits),
+            shift_hi: u64::BITS - t_bits,
+            shift_lo: u64::BITS - s_bits,
+            displacements,
+            output_bits: r_bits,
+        };
+
+        ret
+    }
+    fn output_bits(&self) -> u32 {
+        self.output_bits
+    }
+
+    fn query(&self, key: u64) -> u64 {
+        let reduced = (util::clmul(key, self.a1) as u64) & self.mask;
+        let decollided = util::clmul(reduced, self.a2) as u64;
+        let hi = decollided >> self.shift_hi;
+        let lo = (decollided >> self.shift_lo) & ((1 << (self.shift_hi - self.shift_lo)) - 1);
+        self.displacements[hi as usize] ^ lo
+    }
+
+    fn max_memory_read(&self) -> Option<u32> {
+        /* Read a single displacement */
+        Some(1)
+    }
+    fn total_memory_usage(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>() + self.displacements.len() * std::mem::size_of::<u64>())
+    }
+}
+
+#[test]
+fn test_ocmxdisp_hash() {
+    test_perfect_hash::<OCMxDispHash>();
 }
