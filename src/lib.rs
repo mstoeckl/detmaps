@@ -96,7 +96,8 @@ impl<H: PerfectHash<u64, u64>> Dict<u64, u64> for HDict<H> {
             }
         }
 
-        // note: can reduce space usage of this very slightly with deterministic MIF alg.
+        /* note: can reduce space usage of this very slightly with deterministic MIF alg,
+         * but it doesn't matter, because the table allocated later will be larger anyway */
         let mut is_key: Vec<bool> = vec![false; data.len()];
         for (k, _v) in data {
             if *k < data.len() as u64 {
@@ -105,6 +106,7 @@ impl<H: PerfectHash<u64, u64>> Dict<u64, u64> for HDict<H> {
         }
         let output_bits = hash.output_bits();
         let non_key = is_key.iter().position(|x| !x).unwrap_or(data.len()) as u64;
+        drop(is_key);
         let mut table: Vec<(u64, u64)> = vec![(non_key, 0); 1 << output_bits];
         for (k, v) in data.iter() {
             let h = hash.query(*k);
@@ -599,6 +601,119 @@ fn compute_displacement(input: &[(u64, u64)], t: u32, r: u32) -> Vec<u64> {
     disp
 }
 
+/** Space-optimized version of [compute_displacement], specialized for the second
+ * displacement / when the input collision count is already low.
+ *
+ * Input: (t+l)-bit integers, with t the high bits and l the low. Will be shuffled,
+ * but contents should not otherwise be changed.
+ *
+ * t: bits of displacement table
+ * l: bits of input to xor with
+ * r: bits of table output (must be >= l)
+ */
+fn compute_final_displacement(input: &mut [u64], t: u32, l: u32, r: u32) -> Vec<u64> {
+    assert!(l <= r);
+    assert!(r < u64::BITS);
+    assert!(r >= next_log_power_of_two(input.len()));
+
+    /* With O(n) collisions, the largest bucket size should be about sqrt(n). */
+    let mut bucket_sizes = vec![0_u32; 1 << t];
+    for x in input.iter() {
+        assert!(*x >> (l + t) == 0);
+        let f = *x >> l;
+        bucket_sizes[f as usize] = bucket_sizes[f as usize].checked_add(1).unwrap();
+    }
+    let mut collisions: u64 = 0;
+    for b in bucket_sizes.iter() {
+        collisions = collisions
+            .checked_add((*b as u64).wrapping_sub(1).wrapping_mul(*b as u64))
+            .unwrap();
+    }
+    collisions /= 2;
+    assert!(4 * collisions <= (1 << r));
+
+    let low_mask: u64 = (1 << l) - 1;
+    input.sort_unstable_by_key(|x| {
+        (
+            u32::MAX - bucket_sizes[(*x >> l) as usize],
+            (*x >> l),
+            x & low_mask,
+        )
+    });
+    drop(bucket_sizes);
+
+    /* Eytzinger layout for m: leaf entries at 1<<r..1<<(r+1); root at
+     * depth 0/position 1; depth i in range 1<<i..1<<(i+1). */
+    // TODO: the maximum value at depth `i` will be, due to the lack of collisions, O(n / 2^i).
+    let mut m = vec![0_u64; 1 << (r + 1)];
+    let mut disp = vec![0; (1 << t).try_into().unwrap()];
+    // note: could save space by writing '(f, disp[f])' into first position of the bucket
+    // (although doing this would damage `input`.)
+
+    let mut bucket_start: usize = 0;
+    let mut last_bucket_len = usize::MAX;
+    while bucket_start < input.len() {
+        let mut bucket_end = bucket_start;
+        while bucket_end < input.len() && input[bucket_end] >> l == input[bucket_start] >> l {
+            bucket_end += 1;
+        }
+        let bucket = &input[bucket_start..bucket_end];
+        bucket_start = bucket_end;
+
+        assert!(bucket.len() <= last_bucket_len);
+        last_bucket_len = bucket.len();
+
+        let f = bucket[0] >> l;
+
+        /* Identify displacement value */
+        let mut u = 0;
+        /* If c = O(n), the initial weight should also be O(n). */
+        let mut lwt = m[1].checked_mul(bucket.len() as u64).unwrap(); // the level 0 weight
+        for i in 1..=r {
+            let level = &mut m[(1 << i) as usize..(2 << i) as usize];
+
+            let shift = r - i;
+            let u0 = u << 1;
+            let u1 = (u << 1) | 1;
+
+            let mut zero_wt = 0;
+            for x in bucket {
+                let g = x & low_mask;
+                zero_wt += level[((g >> shift) ^ u0) as usize];
+            }
+
+            let one_wt = lwt - zero_wt;
+
+            // Choose the next bit value for which the weight is sub-average
+            if one_wt < zero_wt {
+                u = u1;
+                lwt = one_wt;
+            } else {
+                u = u0;
+                lwt = zero_wt;
+            }
+        }
+
+        disp[f as usize] = u;
+
+        /* Update `m` */
+        for i in 0..=r {
+            let level = &mut m[(1 << i) as usize..(2 << i) as usize];
+            let shift = r - i;
+            // println!("i {} u {} shift {} level len {}", i, u, shift, level.len());
+            for x in bucket {
+                let g = x & low_mask;
+                if i == r {
+                    assert!(level[((g ^ u) >> shift) as usize] == 0);
+                }
+                level[((g ^ u) >> shift) as usize] += 1;
+            }
+        }
+    }
+
+    disp
+}
+
 impl HMPQuadHash {
     fn new(keys: &[(u64, u64)], r_bits: u32) -> HMPQuadHash {
         // Ensure r_bits <= 63 to avoid weird edge cases
@@ -1026,7 +1141,7 @@ fn count_inversions(perm: &[u64]) -> u64 {
 
     fn sorted_merge(left: &[u64], right: &[u64], output: &mut [u64]) {
         assert!(left.len() + right.len() == output.len());
-        assert!(left.len() >= 1 && right.len() >= 1);
+        assert!(!left.is_empty() && !right.is_empty());
 
         let mut output_iter = output.iter_mut();
         let mut left_iter = left.iter();
@@ -1438,7 +1553,7 @@ pub type R09BfxHMP01Dict = HDict<R09BfxHMP01Hash>;
 
 impl PerfectHash<u64, u64> for R09BfxHMP01Hash {
     fn new(data: &[u64], u_bits: u32) -> R09BfxHMP01Hash {
-        let reduction = Ruzic09BReduction::new_fast(&data, u_bits);
+        let reduction = Ruzic09BReduction::new_fast(data, u_bits);
 
         let reduced_keys: Vec<u64> = data.iter().map(|k| reduction.apply(*k)).collect();
 
@@ -1479,7 +1594,7 @@ pub type R09BpxHMP01Dict = HDict<R09BpxHMP01Hash>;
 
 impl PerfectHash<u64, u64> for R09BpxHMP01Hash {
     fn new(data: &[u64], u_bits: u32) -> R09BpxHMP01Hash {
-        let reduction = Ruzic09BReduction::new_precise(&data, u_bits);
+        let reduction = Ruzic09BReduction::new_precise(data, u_bits);
 
         let reduced_keys: Vec<u64> = data.iter().map(|k| reduction.apply(*k)).collect();
 
@@ -1944,7 +2059,7 @@ impl PerfectHash<u64, u64> for XorReducedHash {
         let mut space = std::mem::size_of::<Self>() - std::mem::size_of::<HMPQuadHash>();
         space += self.quad.total_memory_usage().unwrap();
         for t in self.xor_table.iter() {
-            space += std::mem::size_of_val(&t) + t.len() * std::mem::size_of::<u64>();
+            space += std::mem::size_of_val(t) + t.len() * std::mem::size_of::<u64>();
         }
         Some(space)
     }
@@ -2107,7 +2222,7 @@ fn ruzic09a_alg_1(
                 j += 1;
                 k >>= 1;
             }
-            k = k + 1;
+            k += 1;
             count = 1;
             qstart = q;
         } else {
@@ -2210,7 +2325,7 @@ fn select_bits_slow(
     // x_table.resize_with(1 << (phi_bits + pl + 1), || Vec::new()); // TODO: this table is inefficient when pl is close to psi_bits; 1<<(psi+phi) is >> n. Use a different structure/list of lists for the leaves.
 
     let mut x_table: Vec<Vec<SubTable>> = Vec::new();
-    x_table.resize_with(1 << (phi_bits + 1), || Vec::new());
+    x_table.resize_with(1 << (phi_bits + 1), Vec::new);
 
     // X_table: by 'v'
 
@@ -3547,7 +3662,7 @@ fn compute_oms_batch_ring_count(
                 left == get_left_pos(*kl, &sorted_r, gap, mod_mask),
                 "left {}, ideal {}, diffs {:?}, vals {:?}",
                 left,
-                get_left_pos(*kl, &sorted_r, gap, mod_mask),
+                get_left_pos(*kl, sorted_r, gap, mod_mask),
                 diffs,
                 vals
             );
@@ -3555,7 +3670,7 @@ fn compute_oms_batch_ring_count(
                 right == get_right_pos(*kl, &sorted_r, mod_mask),
                 "right {}, ideal {}, diffs {:?}, vals {:?}",
                 right,
-                get_right_pos(*kl, &sorted_r, mod_mask),
+                get_right_pos(*kl, sorted_r, mod_mask),
                 diffs,
                 vals
             );
@@ -3669,11 +3784,11 @@ fn compute_oms_batch_delta(
     // base interaction count is optimized and/or structure of the level sets is
     // better understood
 
-    let count_lr = compute_oms_batch_ring_count(&scratch_l, &scratch_r, gap, mod_mask);
-    let count_rl = compute_oms_batch_ring_count(&scratch_r, &scratch_l, gap, mod_mask);
+    let count_lr = compute_oms_batch_ring_count(scratch_l, scratch_r, gap, mod_mask);
+    let count_rl = compute_oms_batch_ring_count(scratch_r, scratch_l, gap, mod_mask);
     let count = count_rl + count_lr;
 
-    return count;
+    count
 }
 
 /** Sort array by bit-reversed entries. (This is a separate non-inlined function for easier cost tracking
@@ -3711,8 +3826,7 @@ fn base_interaction_count(rev_sorted_keys: &[u64], _u_bits: u32, output_bits: u3
         pos: usize, /* index so that (rev_sorted_keys[j] >> bit) & 1 == 1 */
     }
 
-    let mut stack: Vec<Transition> = Vec::new();
-    stack.reserve(max_bit as usize);
+    let mut stack: Vec<Transition> = Vec::with_capacity(max_bit as usize);
 
     for (i_m_1, pair) in rev_sorted_keys.windows(2).enumerate() {
         let i = i_m_1 + 1;
@@ -3873,7 +3987,7 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
                 continue;
             }
 
-            if alpha_bits + i > u64::BITS + 1 && true {
+            if alpha_bits + i > u64::BITS + 1 {
                 /* These counts do not change because further extensions to `alpha` only
                  * differently affect bits that are masked off by mod 2^u? */
                 wt += interaction_counts[i as usize] * extensions_per_interaction;
@@ -3910,8 +4024,8 @@ fn oms_opt_batch_construction(keys: &[u64], u_bits: u32, output_bits: u32) -> Mu
                 let (scratch0, scratch1) = scratch_region.split_at_mut(count0);
 
                 interactions += compute_oms_batch_delta(
-                    &keys0,
-                    &keys1,
+                    keys0,
+                    keys1,
                     scratch0,
                     scratch1,
                     a,
@@ -4075,7 +4189,7 @@ fn batch_partial_sort_step(mkeys: &mut [u64], scratch: &mut [u64], mult_bits: u3
         }
     }
 
-    if mkeys.len() > 0 {
+    if !mkeys.is_empty() {
         let sfx = mkeys[0] & ((1 << (i_bits + 1)) - 1);
         for k in mkeys.iter() {
             assert!(k & ((1 << (i_bits + 1)) - 1) == sfx);
@@ -4114,8 +4228,8 @@ fn batch_partial_sort_step(mkeys: &mut [u64], scratch: &mut [u64], mult_bits: u3
     //     scratch0.fill(u64::MAX);
     //     scratch1.fill(u64::MAX);
 
-    merge_away_top_bit(&part0, mult_bits, scratch0);
-    merge_away_top_bit(&part1, mult_bits, scratch1);
+    merge_away_top_bit(part0, mult_bits, scratch0);
+    merge_away_top_bit(part1, mult_bits, scratch1);
 
     let mod_mask = if mult_bits >= u64::BITS {
         u64::MAX
@@ -4302,8 +4416,8 @@ fn oms_batch_construction2(keys: &[u64], u_bits: u32, output_bits: u32) -> Multi
                 let gap = 1 << (u64::BITS - output_bits);
 
                 let count = if !mul0.is_empty() && !mul1.is_empty() {
-                    let count_lr = compute_oms_batch_ring_count(&mul0, &mul1, gap, mod_mask);
-                    let count_rl = compute_oms_batch_ring_count(&mul1, &mul0, gap, mod_mask);
+                    let count_lr = compute_oms_batch_ring_count(mul0, mul1, gap, mod_mask);
+                    let count_rl = compute_oms_batch_ring_count(mul1, mul0, gap, mod_mask);
                     count_lr + count_rl
                 } else {
                     0
@@ -4447,7 +4561,7 @@ impl PerfectHash<u64, u64> for OMSxFKSHash {
             if list.len() <= 1 {
                 continue;
             }
-            let hash = Raman95Hash::new(&list, u_bits).0;
+            let hash = Raman95Hash::new(list, u_bits).0;
             let hash_size = 1u64 << hash.output_bits();
             for key in list.iter() {
                 outputs_taken[(bucket_offset + hash.query(*key)) as usize] = true;
@@ -4461,7 +4575,7 @@ impl PerfectHash<u64, u64> for OMSxFKSHash {
             if list.len() != 1 {
                 continue;
             }
-            let hash = Raman95Hash::new(&list, u_bits).0;
+            let hash = Raman95Hash::new(list, u_bits).0;
             assert!(hash.output_bits() == 0);
             while outputs_taken[free_offset] {
                 free_offset += 1;
@@ -5060,7 +5174,7 @@ fn count_bad_mult_extensions_for_pair(
     let col = (offset_col_count as u128) << (mod_bits - alpha_bits);
     // println!("medium path: {:016x} v {:016x} (i={},mod_bits={}): {:x}", mult_key_0, mult_key_1, i_bits, mod_bits, col );
 
-    return U256::from_u128(col);
+    U256::from_u128(col)
 }
 
 /** Count the number of offsets in {0,..,2^{b} -1} which produce a collision.
@@ -5975,8 +6089,8 @@ fn oma_batch_find_multiplier(keys: &[u64], u_bits: u32, output_bits: u32) -> u64
 
                 let count = if !mul0.is_empty() && !mul1.is_empty() {
                     compute_oma_batch_ring_count(
-                        &mul0,
-                        &mul1,
+                        mul0,
+                        mul1,
                         u_bits,
                         alpha_bits,
                         i_bits,
@@ -6673,7 +6787,7 @@ fn batch_merge_ocm(mkeys: &mut [u64], scratch: &mut [u64], start_bits: u32, i_bi
         }
     }
 
-    if mkeys.len() > 0 {
+    if !mkeys.is_empty() {
         let sfx = mkeys[0] & ((1 << (i_bits + 1)) - 1);
         for k in mkeys.iter() {
             assert!(k & ((1 << (i_bits + 1)) - 1) == sfx);
@@ -6815,10 +6929,8 @@ fn ocm_batch_construction(
     let moduo_mask = (1 << (u_bits - output_bits)) - 1;
     let target_mask = modu_mask ^ moduo_mask;
 
-    /* u128 suffices if (2 \binom{n}{2} <= u128::MAX, because the initial probabilities are all either 0 or 1/2^s,
-     * so the initial value is <= \binom{n}{2}; the weights checked will never increase above twice this. */
-    assert!((keys.len() as u128) * (keys.len() as u128).wrapping_sub(1) <= u128::MAX);
-
+    /* Since n=keys.len() < u64::MAX, the maximum posssible expected collision value seen (after adjusting for the 1/2^s fixed point)
+     * is 2*\binom{n}{2}, which is <= n^2 and always fits inside a u128 */
     let mut last_wt: Option<u128> = None;
     /* Bits in 'a' higher than or at u_bits have no effect on the output */
     for b in 0..u_bits {
@@ -6913,8 +7025,8 @@ fn ocm_batch_construction(
 
                 let count = if !mul0.is_empty() && !mul1.is_empty() {
                     compute_ocm_batch_ring_count(
-                        &mul0,
-                        &mul1,
+                        mul0,
+                        mul1,
                         u_bits,
                         alpha_bits,
                         i_bits,
@@ -6987,7 +7099,7 @@ impl PerfectHash<u64, u64> for OCMxDispHash {
         assert!(s_bits < u64::BITS);
         let primary_hash = ocm_batch_construction(keys, u_bits, s_bits);
         let mask = u64::MAX ^ ((1 << primary_hash.shift) - 1);
-        let reduced_keys = Vec::from_iter(keys.iter().map(|k| primary_hash.query(*k)));
+        let mut reduced_keys = Vec::from_iter(keys.iter().map(|k| primary_hash.query(*k)));
 
         /* Compute hash and table parameters to minimize total space
          * when used to implement a dictionary. */
@@ -7046,25 +7158,27 @@ impl PerfectHash<u64, u64> for OCMxDispHash {
 
         let secondary_hash = ocm_batch_construction(&reduced_keys, s_bits, t_bits);
 
-        let split_keys: Vec<(u64, u64)> = reduced_keys
-            .iter()
-            .map(|k| {
-                let d = (util::clmul(*k, secondary_hash.a) as u64) >> (u64::BITS - s_bits);
-
-                assert!(*k >> s_bits == 0 && d >> s_bits == 0);
-                let hi = d >> lo_bits;
-                let lo = d & ((1 << lo_bits) - 1);
-                assert!(hi >> t_bits == 0);
-                assert!(lo >> lo_bits == 0);
-                (hi, lo)
-            })
-            .collect();
+        /* Apply the secondary hash to the key set, and organize low/high bits */
+        for k in reduced_keys.iter_mut() {
+            let d = (util::clmul(*k, secondary_hash.a) as u64) >> (u64::BITS - s_bits);
+            *k = d;
+        }
 
         // Test variant: explicitly verify that collision counts are as expected?
+        let displacements = compute_final_displacement(&mut reduced_keys, t_bits, lo_bits, r_bits);
+        if false {
+            let mut counts = vec![false; 1 << r_bits];
+            /* since as of writing, compute_final_displacement only _permutes_ keys */
+            for k in reduced_keys.iter() {
+                let f = *k >> lo_bits;
+                let g = *k & ((1 << lo_bits) - 1);
+                let h = displacements[f as usize] ^ g;
+                assert!(!counts[h as usize]);
+                counts[h as usize] = true;
+            }
+        }
 
-        let displacements = compute_displacement(&split_keys, t_bits, r_bits);
-
-        let ret = OCMxDispHash {
+        OCMxDispHash {
             a1: primary_hash.a,
             mask,
             a2: secondary_hash.a >> (u64::BITS - s_bits),
@@ -7072,9 +7186,7 @@ impl PerfectHash<u64, u64> for OCMxDispHash {
             shift_lo: u64::BITS - s_bits,
             displacements,
             output_bits: r_bits,
-        };
-
-        ret
+        }
     }
     fn output_bits(&self) -> u32 {
         self.output_bits
