@@ -5,7 +5,7 @@
  * hitting memory limit). This approach runs a subprocess per benchmark size class.)
  */
 
-use clap::{Arg, ArgAction};
+use clap::{value_parser, Arg, ArgAction};
 use detmaps::*;
 use rustix::{event, fs, io, pipe, process};
 use std::{
@@ -77,6 +77,7 @@ fn run_dictionary_cycle<H: Dict<u64, u64>>(
     let chain_iterations =
         std::hint::black_box((data.len() as u64).checked_mul(iterations).unwrap());
 
+    // TODO: also record instruction counts, etc. using perf_event_open
     let start_time = std::time::Instant::now();
     let mut dict = None;
     for _ in 0..iterations {
@@ -253,6 +254,26 @@ fn main() {
                 .default_value("false"),
         )
         .arg(
+            Arg::new("memory")
+                .long("memory")
+                .help("Hard limit on memory used (GB)")
+                .value_parser(value_parser!(f64))
+                .default_value("16"),
+        )
+        .arg(
+            Arg::new("time-hard")
+                .long("time-hard")
+                .help("Hard limit on time used (seconds)")
+                .value_parser(value_parser!(f64))
+                .default_value("10.0"),
+        )
+        .arg(
+            Arg::new("list")
+                .long("list")
+                .action(ArgAction::SetTrue)
+                .default_value("false"),
+        )
+        .arg(
             Arg::new("new")
                 .long("new")
                 .action(ArgAction::SetTrue)
@@ -266,8 +287,9 @@ fn main() {
 
     let matches = cmd.get_matches();
 
-    let memory_limit = 10 * 1024 * 1024 * 1024; /* bytes */
-    let time_hard_max = 10.0; /* seconds */
+    let memory_limit_gb = matches.get_one::<f64>("memory").unwrap();
+    let memory_limit = (memory_limit_gb * ((1024 * 1024 * 1024) as f64)) as u64; /* bytes */
+    let time_hard_max = matches.get_one::<f64>("time-hard").unwrap(); /* seconds */
     let time_soft_max = 3.0; /* seconds */
     let time_min = 0.1; /* seconds */
 
@@ -303,8 +325,7 @@ fn main() {
         assert!(parts.len() == 3);
         let bench_name = parts[0];
         let u_bits = u32::from_str_radix(&parts[1], 10).unwrap();
-        let sz_bits = u32::from_str_radix(&parts[2], 10).unwrap();
-        let sz = 1 << sz_bits;
+        let sz = u64::from_str_radix(&parts[2], 10).unwrap();
 
         let mem_limit = process::getrlimit(process::Resource::As);
         let new_memory_limit = mem_limit.current.unwrap_or(memory_limit).min(memory_limit);
@@ -336,7 +357,7 @@ fn main() {
             soft_max_time_sec: time_soft_max,
             output_pipe,
             u_bits,
-            sz,
+            sz: sz.try_into().unwrap(),
         };
 
         let Some(b) = benchmarks.iter().find(|x| x.0 == bench_name) else {
@@ -346,7 +367,18 @@ fn main() {
         return;
     }
 
-    let size_classes: Vec<u32> = (0..=33).collect();
+    let mut size_classes: Vec<u64> = (1..7).collect();
+    for i in 3..=30 {
+        // 2^30 entries require >= 16 gb for input, 16 gb for table
+        let sz = 1u64 << i;
+        size_classes.push(sz);
+        size_classes.push(((sz as f64) * f64::sqrt(f64::sqrt(2.0))) as u64);
+        size_classes.push(((sz as f64) * f64::sqrt(2.0)) as u64);
+        size_classes.push(((sz as f64) * f64::sqrt(f64::sqrt(8.0))) as u64);
+    }
+    assert!(size_classes.is_sorted());
+    assert!(size_classes.windows(2).all(|w| w[0] != w[1]));
+
     let is_list = matches.get_flag("list");
     if is_list {
         for c in size_classes.iter() {
@@ -373,10 +405,10 @@ fn main() {
         .unwrap_or_default()
         .collect();
 
-    let mut chosen_benches: Vec<(&'static str, u32, u32)> = Vec::new();
+    let mut chosen_benches: Vec<(&'static str, u32, u64)> = Vec::new();
     for c in size_classes.iter() {
         for u_bits in [32u32, 64u32] {
-            if *c > u_bits {
+            if *c as u128 > 1u128 << u_bits {
                 continue;
             }
 
@@ -411,12 +443,12 @@ fn main() {
     std::fs::create_dir_all(&archive_folder).unwrap();
     std::fs::create_dir_all(&output_folder).unwrap();
 
-    for (name, u_bits, sz_class) in chosen_benches {
+    for (name, u_bits, sz) in chosen_benches {
         if failed_benches.contains(&(name, u_bits)) {
             continue;
         }
 
-        let full_name = format!("{}_{}_{}", name, u_bits, sz_class);
+        let full_name = format!("{}_{}_{}", name, u_bits, sz);
         let file_name = full_name.clone() + ".json";
         let current_path = std::path::PathBuf::from(output_folder.clone()).join(&file_name);
         if new_only && std::fs::exists(&current_path).unwrap() {
@@ -426,11 +458,12 @@ fn main() {
         let (pipe_r, pipe_w) = pipe::pipe_with(pipe::PipeFlags::CLOEXEC).unwrap();
         io::fcntl_setfd(&pipe_w, io::FdFlags::empty()).unwrap();
         let shared_fd = format!("{}", pipe_w.as_raw_fd());
+        let memlimit_gb = format!("{}", memory_limit_gb);
 
         let bench_start_time = std::time::Instant::now();
 
         let mut handle = std::process::Command::new(&executable)
-            .args(&["--run", &shared_fd, &full_name])
+            .args(&["--memory", &memlimit_gb, "--run", &shared_fd, &full_name])
             .spawn()
             .unwrap();
         drop(pipe_w);
